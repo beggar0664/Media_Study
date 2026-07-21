@@ -1,0 +1,33 @@
+# Build outputs and transient files
+**/build/
+**/bin/
+**/obj/
+**/out/
+MediaProtrocl/RTSP/
+MediaProtrocl/GB28181/
+**/*.log
+**/*.tlog
+**/*.lastbuildstate
+**/*.pch
+**/*.pdb
+**/*.ilk
+**/*.idb
+**/*.cache
+
+# Packaged binaries / archives
+**/*.exe
+**/*.dll
+**/*.zip
+**/*.rar
+**/*.7z
+
+# Qt / IDE generated artifacts
+**/*.moc
+**/*.qrc.depends
+**/*.qm
+**/ui_*.h
+**/*_autogen/
+
+# OS noise
+.DS_Store
+Thumbs.db
