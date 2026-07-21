@@ -1,12 +1,12 @@
 # Media Study
 
-这是一个媒体封装与传输协议的学习仓库，重点放在容器层和协议层的拆解、字节级定位和代码对照。
+这是一个媒体封装与传输协议的学习仓库，重点放在容器层、协议传输层和编解码层的拆解、字节级定位和代码对照。
 
 ## 目录
 
 ### `Container`
 
-容器层总纲与样本，关注 PS / TS / FLV 这类封装格式本身。
+容器层总纲与样本，关注 PS / TS / FLV / MP4 这类封装格式本身。
 
 - `[container_layer_study.md](Container/container_layer_study.md)`：容器分层总纲
 - `[ts/ts_study.md](Container/ts/ts_study.md)`：TS 结构与样本分析
@@ -14,7 +14,7 @@
 
 ### `MediaProtrocl`
 
-媒体协议层资料，当前主要是 FLV / RTMP / RTSP / GB28181。
+媒体协议传输层资料，当前主要是 FLV / RTMP / RTSP / GB28181。
 
 - `[flv/flv_study.md](MediaProtrocl/flv/flv_study.md)`：FLV 结构学习笔记
 - `[flv/flv_code_study.md](MediaProtrocl/flv/flv_code_study.md)`：FLV 代码摘录
@@ -33,7 +33,7 @@ RTSP 与 GB28181 相关资料也放在 `MediaProtrocl` 下，RTP 作为它们的
 ## 资料定位
 
 - `Container`：容器格式学习。
-- `MediaProtrocl`：媒体协议与推流封装学习，包括 FLV、RTMP、RTSP、GB28181 和 RTP 承载链路。
+- `MediaProtrocl`：媒体协议传输学习，包括 FLV、RTMP、RTSP、GB28181 和 RTP 承载链路。
 - 样本文件保留在对应目录下，用于 WinHex 和代码对照。
 
 ## 备注
