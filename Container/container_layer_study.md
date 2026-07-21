@@ -628,3 +628,5 @@ POC
 
 PTS、DTS、SCR、PCR、流 ID、编解码类型主要属于封装层。  
 NALU、VPS/SPS/PPS、IDR/P/B、参考帧关系主要属于编解码层。
+
+RTP 更适合作为 RTSP / GB28181 的媒体承载层单独学习，不放进这个容器总纲里。
