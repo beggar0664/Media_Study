@@ -19,6 +19,8 @@
 - `[flv/flv_study.md](MediaProtrocl/flv/flv_study.md)`：FLV 结构学习笔记
 - `[flv/flv_code_study.md](MediaProtrocl/flv/flv_code_study.md)`：FLV 代码摘录
 - `[rtmp/rtmp_study.md](MediaProtrocl/rtmp/rtmp_study.md)`：RTMP 模块学习笔记
+- `[rtsp_study.md](MediaProtrocl/rtsp_study.md)`：RTSP 边界说明
+- `[gb28181_study.md](MediaProtrocl/gb28181_study.md)`：GB28181 边界说明
 
 RTSP 与 GB28181 相关资料也放在 `MediaProtrocl` 下，RTP 作为它们的媒体承载层一起学习。
 
@@ -28,7 +30,7 @@ RTSP 与 GB28181 相关资料也放在 `MediaProtrocl` 下，RTP 作为它们的
 2. 再读 `Container/ts/ts_study.md`，看 TS 的实际字节结构和排障过程。
 3. 然后读 `MediaProtrocl/flv/flv_study.md` 和 `MediaProtrocl/flv/flv_code_study.md`，对照 FLV 结构与代码。
 4. 最后读 `MediaProtrocl/rtmp/rtmp_study.md`，把 RTMP、librtmp 和 FLV dump 路径串起来。
-5. 如果要看实时推流链路，再进入 `MediaProtrocl/RTSP` 和 `MediaProtrocl/GB28181`，看 RTP 如何承载媒体数据。
+5. 再读 `MediaProtrocl/rtsp_study.md` 和 `MediaProtrocl/gb28181_study.md`，把 RTP 的承载位置看清楚。
 
 ## 资料定位
 

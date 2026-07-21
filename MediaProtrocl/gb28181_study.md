@@ -1,0 +1,79 @@
+# GB28181 代码学习摘录
+
+这份文档补 GB28181 这一层的边界说明。
+
+GB28181 不是容器格式，它是一套**国标监控联网协议**。在媒体链路里，GB28181 负责信令和会话，RTP 负责媒体承载。
+
+## 1. 这一层管什么
+
+GB28181 主要回答这些问题：
+
+```text
+1. 设备怎么注册
+2. 平台怎么目录查询
+3. 怎么发起播放/回放
+4. 媒体流怎么建立
+5. 媒体数据用什么端口和 SSRC 传输
+```
+
+它不负责把视频码流封成文件容器，也不负责解码画面。
+
+## 2. 和 RTP 的关系
+
+GB28181 的媒体承载一般是 RTP / RTCP：
+
+```text
+GB28181 信令
+  -> 设备注册 / 目录 / 设备控制 / 播放控制
+
+RTP
+  -> 携带 H.264 / H.265 / AAC payload
+
+RTCP
+  -> 做同步、统计、反馈
+```
+
+所以 RTP 在 GB28181 中是承载层，不是容器层。
+
+## 3. 学习时要盯住的字段
+
+GB28181 / SIP 常见关注点：
+
+- `REGISTER`
+- `INVITE`
+- `BYE`
+- `MESSAGE`
+- `SUBSCRIBE`
+- `NOTIFY`
+- `Call-ID`
+- `From` / `To`
+- `Via`
+- `CSeq`
+- `Contact`
+- `SDP`
+
+RTP 侧常见关注点：
+
+- `SSRC`
+- `sequence number`
+- `timestamp`
+- `payload type`
+- `marker bit`
+
+## 4. 和容器层的边界
+
+GB28181 不等于 TS / FLV / MP4。它更像“国标实时会话 + 媒体承载规范”。
+
+```text
+容器层：PS / TS / FLV / MP4
+协议传输层：RTSP / RTP / RTCP / RTMP / GB28181
+编解码层：H.264 / H.265 / AAC
+```
+
+## 5. 建议阅读顺序
+
+1. 先看 `Container/container_layer_study.md`
+2. 再看 GB28181 的信令代码或协议资料
+3. 再看 RTP 承载与打包
+4. 最后回到编码层看 H.264 / H.265 payload
+
