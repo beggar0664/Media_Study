@@ -80,6 +80,7 @@ GB28181 不等于 TS / FLV / MP4。它更像“国标实时会话 + 媒体承载
 ## 6. 这个目录里的源码怎么对照
 
 `E:\code\Media\MediaProtrocl\GB28181` 目录里现在放的是 `jrtplib` 和 `jthread` 的源码包，这很适合拿来当 GB28181 的 RTP 实现参考。
+这个目录下现在也有一个最小可用的 GB28181 模块骨架：`gb28181_module.h/.c`。
 
 它们的分工可以这样看：
 
@@ -107,5 +108,6 @@ GB28181 信令 -> SIP / SDP
 - `jrtplib-3.11.2/src/rtpudpv6transmitter.*`：UDP/IPv6 承载实现
 - `jrtplib-3.11.2/src/rtcpsrpacket.*`、`rtcprrpacket.*`：RTCP 报文
 - `jthread-1.3.3/src/*`：线程相关基础实现
+- `gb28181_module.h/.c`：最小 GB28181 模块骨架，覆盖配置、SIP 文本、SDP 和 RTP 发包接口
 
 读这套源码时，不要把它当容器代码看。它更接近“实时传输引擎”。真正的媒体内容仍然是 H.264 / H.265 / AAC 的 payload，RTP 只负责把它们搬运和编号。
