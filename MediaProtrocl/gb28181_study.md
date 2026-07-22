@@ -77,3 +77,35 @@ GB28181 不等于 TS / FLV / MP4。它更像“国标实时会话 + 媒体承载
 3. 再看 RTP 承载与打包
 4. 最后回到编码层看 H.264 / H.265 payload
 
+## 6. 这个目录里的源码怎么对照
+
+`E:\code\Media\MediaProtrocl\GB28181` 目录里现在放的是 `jrtplib` 和 `jthread` 的源码包，这很适合拿来当 GB28181 的 RTP 实现参考。
+
+它们的分工可以这样看：
+
+```text
+jrtplib
+  -> 负责 RTP / RTCP 的收发、会话、序号、时间戳、SSRC
+
+jthread
+  -> 负责线程基础设施，给 jrtplib 的线程支持提供依赖
+```
+
+对 GB28181 来说，这两个库的关系是：
+
+```text
+GB28181 信令 -> SIP / SDP
+媒体承载    -> RTP / RTCP
+实现工具    -> jrtplib + jthread
+```
+
+建议优先看的源码位置：
+
+- `jrtplib-3.11.2/src/rtpsession.*`：RTP 会话主入口
+- `jrtplib-3.11.2/src/rtptransmitter.*`：传输器抽象
+- `jrtplib-3.11.2/src/rtpudpv4transmitter.*`：UDP/IPv4 承载实现
+- `jrtplib-3.11.2/src/rtpudpv6transmitter.*`：UDP/IPv6 承载实现
+- `jrtplib-3.11.2/src/rtcpsrpacket.*`、`rtcprrpacket.*`：RTCP 报文
+- `jthread-1.3.3/src/*`：线程相关基础实现
+
+读这套源码时，不要把它当容器代码看。它更接近“实时传输引擎”。真正的媒体内容仍然是 H.264 / H.265 / AAC 的 payload，RTP 只负责把它们搬运和编号。
