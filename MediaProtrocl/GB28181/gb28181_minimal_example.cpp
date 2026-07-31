@@ -1,5 +1,11 @@
 #include "gb28181_module.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <stdio.h>
 #include <string.h>
 
@@ -9,21 +15,32 @@ int main(void)
     char register_msg[2048];
     char invite_msg[4096];
     char bye_msg[2048];
-    const unsigned char demo_h264_nalu[] = {
-        0x65, 0x88, 0x84, 0x21, 0xa0
+    const unsigned char demo_h264_sps[] = {
+        0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x78,
+        0x02, 0x27, 0xe5, 0xc0
+    };
+    const unsigned char demo_h264_pps[] = {
+        0x68, 0xeb, 0xec, 0xb2, 0x2c
+    };
+    const unsigned char demo_h264_idr[] = {
+        0x65, 0x88, 0x84, 0x21, 0xa0, 0x10, 0x11, 0x12,
+        0x13, 0x14, 0x15, 0x16, 0x17, 0x18
     };
     gb28181_handle_t handle;
+    int ret;
+    int local_rtp_port = 0;
+    unsigned int ssrc = 0;
 
     memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000001320000001");
     snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
     snprintf(cfg.username, sizeof(cfg.username), "%s", "34020000001320000001");
-    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "192.168.1.100");
+    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "127.0.0.1");
     cfg.sip_server_port = 5060;
-    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "192.168.1.10");
+    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
     cfg.local_sip_port = 5060;
     cfg.local_rtp_port = 10000;
-    snprintf(cfg.remote_rtp_ip, sizeof(cfg.remote_rtp_ip), "%s", "192.168.1.100");
+    snprintf(cfg.remote_rtp_ip, sizeof(cfg.remote_rtp_ip), "%s", "127.0.0.1");
     cfg.remote_rtp_port = 30000;
     snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
     cfg.payload_type = 96;
@@ -37,14 +54,58 @@ int main(void)
     printf("===== INVITE + SDP =====\n%s\n", invite_msg);
     printf("===== BYE =====\n%s\n", bye_msg);
 
+    printf("[1/4] create context\n");
     handle = gb28181_create(&cfg);
     if (!handle) {
+        printf("create failed\n");
         return 1;
     }
 
+    printf("[2/4] start RTP session\n");
     if (gb28181_start(handle) == 0) {
-        gb28181_send_rtp_packet(handle, demo_h264_nalu, sizeof(demo_h264_nalu), 9000, 1);
+        int i;
+        printf("RTP session started\n");
+        if (gb28181_get_local_rtp_port(handle, &local_rtp_port) == 0) {
+            printf("local RTP port: %d\n", local_rtp_port);
+        } else {
+            printf("local RTP port: unknown\n");
+        }
+        if (gb28181_get_ssrc(handle, &ssrc) == 0) {
+            printf("SSRC: %010u (0x%08X)\n", ssrc, ssrc);
+        }
+        printf("sending one H.264 access unit: SPS -> PPS -> IDR\n");
+        ret = gb28181_send_rtp_packet(handle, demo_h264_sps, sizeof(demo_h264_sps), 0, 0);
+        printf("[3/4] send SPS ret=%d len=%u timestamp_inc=%u marker=0\n", ret, (unsigned)sizeof(demo_h264_sps), 0u);
+        if (ret >= 0) {
+            ret = gb28181_send_rtp_packet(handle, demo_h264_pps, sizeof(demo_h264_pps), 0, 0);
+            printf("[3/4] send PPS ret=%d len=%u timestamp_inc=%u marker=0\n", ret, (unsigned)sizeof(demo_h264_pps), 0u);
+        }
+        if (ret >= 0) {
+            ret = gb28181_send_rtp_packet(handle, demo_h264_idr, sizeof(demo_h264_idr), 9000, 1);
+            printf("[3/4] send IDR ret=%d len=%u timestamp_inc=%u marker=1\n", ret, (unsigned)sizeof(demo_h264_idr), 9000u);
+        }
+#ifdef _WIN32
+        Sleep(5000);
+#else
+        sleep(5);
+#endif
+        printf("repeat IDR packets for packet inspection\n");
+        for (i = 0; i < 4; ++i) {
+            ret = gb28181_send_rtp_packet(handle, demo_h264_idr, sizeof(demo_h264_idr), 9000, 1);
+            printf("[3/4] send repeat IDR %d ret=%d len=%u timestamp_inc=%u marker=1\n", i + 1, ret, (unsigned)sizeof(demo_h264_idr), 9000u);
+            if (ret < 0) {
+                break;
+            }
+        }
+#ifdef _WIN32
+        Sleep(5000);
+#else
+        sleep(5);
+#endif
+        printf("[4/4] stop RTP session\n");
         gb28181_stop(handle);
+    } else {
+        printf("start failed\n");
     }
     gb28181_destroy(handle);
     return 0;

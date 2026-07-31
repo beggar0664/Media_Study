@@ -1,9 +1,21 @@
 # Build outputs and transient files
 **/build/
+MediaProtrocl/GB28181/build_nmake/
+MediaProtrocl/GB28181/nmakebuild/
+MediaProtrocl/GB28181/vsbuild/
+MediaProtrocl/GB28181/out/
 **/bin/
 **/obj/
 **/out/
-MediaProtrocl/RTSP/
+MediaProtrocl/RTSP/live555_minimal/build_nmake/
+MediaProtrocl/RTSP/live555_minimal/out/
+MediaProtrocl/RTSP/live555_minimal/media/
+MediaProtrocl/RTSP/MiniFFmpegPlayer/
+MediaProtrocl/RTSP/MiniFFmpegPlayer_L2/
+MediaProtrocl/RTSP/rtsp_tool/
+MediaProtrocl/RTSP/VideoRecorder/
+MediaProtrocl/RTSP/*.zip
+MediaProtrocl/RTSP/*.rar
 MediaProtrocl/GB28181/jrtplib-3.11.2/
 MediaProtrocl/GB28181/jthread-1.3.3/
 **/*.log

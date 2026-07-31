@@ -12,9 +12,16 @@
 #include "rtpudpv4transmitter.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#pragma comment(lib, "crypt32.lib")
+#endif
 
 using namespace jrtplib;
 
@@ -25,6 +32,9 @@ typedef struct gb28181_context_s {
     unsigned int rtp_timestamp;
     unsigned int ssrc;
     RTPSession *rtp_session;
+#ifdef _WIN32
+    int winsock_started;
+#endif
 } gb28181_context_t;
 
 static void gb28181_init_default_config(gb28181_config_t *cfg)
@@ -132,6 +142,18 @@ int gb28181_start(gb28181_handle_t handle)
         return -2;
     }
 
+#ifdef _WIN32
+    if (!ctx->winsock_started) {
+        WSADATA wsa;
+        int wsa_status = WSAStartup(MAKEWORD(2, 2), &wsa);
+        if (wsa_status != 0) {
+            printf("[gb28181] WSAStartup failed: %d\n", wsa_status);
+            return -4;
+        }
+        ctx->winsock_started = 1;
+    }
+#endif
+
     RTPSessionParams session_params;
     session_params.SetOwnTimestampUnit(1.0 / 90000.0);
     session_params.SetAcceptOwnPackets(false);
@@ -150,6 +172,7 @@ int gb28181_start(gb28181_handle_t handle)
     RTPSession *session = new RTPSession();
     int status = session->Create(session_params, &trans_params, RTPTransmitter::IPv4UDPProto);
     if (status < 0) {
+        printf("[gb28181] RTPSession::Create failed: %d\n", status);
         delete session;
         return status;
     }
@@ -163,6 +186,7 @@ int gb28181_start(gb28181_handle_t handle)
     RTPIPv4Address dest(ntohl(remote_ip), (uint16_t)cfg_remote_rtp_port(&ctx->config));
     status = session->AddDestination(dest);
     if (status < 0) {
+        printf("[gb28181] RTPSession::AddDestination failed: %d\n", status);
         session->Destroy();
         delete session;
         return status;
@@ -185,6 +209,12 @@ void gb28181_stop(gb28181_handle_t handle)
         delete ctx->rtp_session;
         ctx->rtp_session = NULL;
     }
+#ifdef _WIN32
+    if (ctx->winsock_started) {
+        WSACleanup();
+        ctx->winsock_started = 0;
+    }
+#endif
     ctx->started = 0;
 }
 
@@ -331,6 +361,83 @@ static void copy_trimmed(char *dst, size_t dst_size, const char *begin, const ch
     dst[len] = '\0';
 }
 
+static void lower_copy(char *dst, size_t dst_size, const char *src)
+{
+    size_t i;
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    for (i = 0; i + 1 < dst_size && src[i] != '\0'; ++i) {
+        dst[i] = (char)tolower((unsigned char)src[i]);
+    }
+    dst[i] = '\0';
+}
+
+static int ascii_ncasecmp(const char *a, const char *b, size_t n)
+{
+#ifdef _WIN32
+    return _strnicmp(a, b, n);
+#else
+    return strncasecmp(a, b, n);
+#endif
+}
+
+static void strip_quotes(char *s)
+{
+    size_t len;
+    if (!s) {
+        return;
+    }
+    len = strlen(s);
+    if (len >= 2 && s[0] == '"' && s[len - 1] == '"') {
+        memmove(s, s + 1, len - 2);
+        s[len - 2] = '\0';
+    }
+}
+
+static void md5_hex(const unsigned char *data, size_t len, char out_hex[33])
+{
+#ifdef _WIN32
+    HCRYPTPROV prov = 0;
+    HCRYPTHASH hash = 0;
+    unsigned char digest[16];
+    DWORD digest_len = sizeof(digest);
+    DWORD i;
+
+    out_hex[0] = '\0';
+    if (!CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        return;
+    }
+    if (!CryptCreateHash(prov, CALG_MD5, 0, 0, &hash)) {
+        CryptReleaseContext(prov, 0);
+        return;
+    }
+    CryptHashData(hash, data, (DWORD)len, 0);
+    if (!CryptGetHashParam(hash, HP_HASHVAL, digest, &digest_len, 0)) {
+        CryptDestroyHash(hash);
+        CryptReleaseContext(prov, 0);
+        return;
+    }
+    for (i = 0; i < digest_len; ++i) {
+        sprintf(out_hex + i * 2, "%02x", digest[i]);
+    }
+    out_hex[32] = '\0';
+    CryptDestroyHash(hash);
+    CryptReleaseContext(prov, 0);
+#else
+    (void)data;
+    (void)len;
+    strcpy(out_hex, "00000000000000000000000000000000");
+#endif
+}
+
+static void md5_concat_hex(char out_hex[33], const char *a, const char *b, const char *c)
+{
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s%s%s", a, b, c);
+    md5_hex((const unsigned char *)buf, strlen(buf), out_hex);
+}
+
 static void parse_header(gb28181_sip_message_t *out, const char *name, size_t name_len, const char *value_begin, const char *value_end)
 {
     if (name_len == 3 && ascii_case_equal_n(name, "Via", name_len)) {
@@ -349,10 +456,44 @@ static void parse_header(gb28181_sip_message_t *out, const char *name, size_t na
         copy_trimmed(out->contact, sizeof(out->contact), value_begin, value_end);
     } else if (name_len == 12 && ascii_case_equal_n(name, "Content-Type", name_len)) {
         copy_trimmed(out->content_type, sizeof(out->content_type), value_begin, value_end);
+    } else if (name_len == 16 && ascii_case_equal_n(name, "WWW-Authenticate", name_len)) {
+        copy_trimmed(out->www_authenticate, sizeof(out->www_authenticate), value_begin, value_end);
+    } else if (name_len == 13 && ascii_case_equal_n(name, "Authorization", name_len)) {
+        copy_trimmed(out->authorization, sizeof(out->authorization), value_begin, value_end);
     } else if (name_len == 14 && ascii_case_equal_n(name, "Content-Length", name_len)) {
         char lenbuf[32];
         copy_trimmed(lenbuf, sizeof(lenbuf), value_begin, value_end);
         out->content_length = atoi(lenbuf);
+    }
+}
+
+static void parse_digest_param(const char *value_begin, const char *value_end, const char *key, char *dst, size_t dst_size)
+{
+    size_t key_len = strlen(key);
+    const char *p = value_begin;
+    while (p < value_end) {
+        const char *kbeg = p;
+        const char *keq = NULL;
+        const char *vend = p;
+        while (vend < value_end && *vend != ',') {
+            ++vend;
+        }
+        keq = (const char *)memchr(kbeg, '=', (size_t)(vend - kbeg));
+        if (keq) {
+            const char *vbeg = keq + 1;
+            while (kbeg < keq && isspace((unsigned char)*kbeg)) {
+                ++kbeg;
+            }
+            while (keq > kbeg && isspace((unsigned char)*(keq - 1))) {
+                --keq;
+            }
+            if ((size_t)(keq - kbeg) == key_len && ascii_case_equal_n(kbeg, key, key_len)) {
+                copy_trimmed(dst, dst_size, vbeg, vend);
+                strip_quotes(dst);
+                return;
+            }
+        }
+        p = vend + 1;
     }
 }
 
@@ -402,6 +543,133 @@ int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out)
         line_begin = line_end + 2;
     }
 
+    return 0;
+}
+
+int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out)
+{
+    const char *p;
+    const char *end;
+
+    if (!header_value || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    snprintf(out->algorithm, sizeof(out->algorithm), "%s", "MD5");
+
+    p = header_value;
+    while (*p && isspace((unsigned char)*p)) {
+        ++p;
+    }
+    if (ascii_ncasecmp(p, "Digest", 6) == 0) {
+        p += 6;
+    }
+    end = p + strlen(p);
+    parse_digest_param(p, end, "realm", out->realm, sizeof(out->realm));
+    parse_digest_param(p, end, "nonce", out->nonce, sizeof(out->nonce));
+    parse_digest_param(p, end, "qop", out->qop, sizeof(out->qop));
+    parse_digest_param(p, end, "opaque", out->opaque, sizeof(out->opaque));
+    parse_digest_param(p, end, "algorithm", out->algorithm, sizeof(out->algorithm));
+    if (out->realm[0] == '\0' || out->nonce[0] == '\0') {
+        return -2;
+    }
+    return 0;
+}
+
+int gb28181_build_digest_authorization(const gb28181_config_t *config,
+                                       const char *method,
+                                       const char *uri,
+                                       const gb28181_digest_challenge_t *challenge,
+                                       char *buf,
+                                       int buf_size)
+{
+    char ha1[33];
+    char ha2[33];
+    char response[33];
+    char nc[9] = "00000001";
+    const char *qop_value = NULL;
+    char a1[512];
+    char a2[512];
+    char rsp_input[1024];
+
+    if (!config || !method || !uri || !challenge || !buf || buf_size <= 0) {
+        return -1;
+    }
+    if (challenge->qop[0] != '\0') {
+        qop_value = "auth";
+    }
+
+    snprintf(a1, sizeof(a1), "%s:%s:%s", config->username, challenge->realm, config->password);
+    md5_hex((const unsigned char *)a1, strlen(a1), ha1);
+    snprintf(a2, sizeof(a2), "%s:%s", method, uri);
+    md5_hex((const unsigned char *)a2, strlen(a2), ha2);
+
+    if (qop_value != NULL) {
+        snprintf(rsp_input, sizeof(rsp_input), "%s:%s:%s:%s:%s:%s", ha1, challenge->nonce, nc, "gb28181", qop_value, ha2);
+    } else {
+        snprintf(rsp_input, sizeof(rsp_input), "%s:%s:%s", ha1, challenge->nonce, ha2);
+    }
+    md5_hex((const unsigned char *)rsp_input, strlen(rsp_input), response);
+
+    if (qop_value != NULL) {
+        return snprintf(buf, buf_size,
+            "Authorization: Digest username=\"%s\", realm=\"%s\", nonce=\"%s\", uri=\"%s\", response=\"%s\", algorithm=%s, qop=%s, nc=%s, cnonce=\"gb28181\"\r\n",
+            config->username,
+            challenge->realm,
+            challenge->nonce,
+            uri,
+            response,
+            challenge->algorithm[0] ? challenge->algorithm : "MD5",
+            qop_value,
+            nc);
+    }
+
+    return snprintf(buf, buf_size,
+        "Authorization: Digest username=\"%s\", realm=\"%s\", nonce=\"%s\", uri=\"%s\", response=\"%s\", algorithm=%s\r\n",
+        config->username,
+        challenge->realm,
+        challenge->nonce,
+        uri,
+        response,
+        challenge->algorithm[0] ? challenge->algorithm : "MD5");
+}
+
+int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out)
+{
+    gb28181_context_t *ctx = (gb28181_context_t *)handle;
+    RTPTransmissionInfo *info;
+    int port;
+
+    if (!ctx || !port_out || !ctx->rtp_session || !ctx->started) {
+        return -1;
+    }
+
+    info = ctx->rtp_session->GetTransmissionInfo();
+    if (!info) {
+        return -2;
+    }
+
+    port = -3;
+    if (info->GetTransmissionProtocol() == RTPTransmitter::IPv4UDPProto) {
+        RTPUDPv4TransmissionInfo *udpinfo = static_cast<RTPUDPv4TransmissionInfo *>(info);
+        port = (int)udpinfo->GetRTPPort();
+    }
+    ctx->rtp_session->DeleteTransmissionInfo(info);
+
+    if (port <= 0) {
+        return -3;
+    }
+    *port_out = port;
+    return 0;
+}
+
+int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out)
+{
+    gb28181_context_t *ctx = (gb28181_context_t *)handle;
+    if (!ctx || !ssrc_out) {
+        return -1;
+    }
+    *ssrc_out = ctx->ssrc;
     return 0;
 }
 

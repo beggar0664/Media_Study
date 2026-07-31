@@ -1,5 +1,9 @@
 # Media Study
 
+核心横向总览：
+
+- [media_layer_commonality.md](media_layer_commonality.md)：容器层与媒体传输层的共性和个性
+
 这是一个媒体封装与传输协议的学习仓库，重点放在容器层、协议传输层和编解码层的拆解、字节级定位和代码对照。
 
 ## 目录

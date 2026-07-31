@@ -40,9 +40,19 @@ typedef struct {
     char cseq_method[32];
     char contact[256];
     char content_type[64];
+    char www_authenticate[512];
+    char authorization[512];
     int content_length;
     const char *body;
 } gb28181_sip_message_t;
+
+typedef struct {
+    char realm[128];
+    char nonce[256];
+    char qop[64];
+    char opaque[128];
+    char algorithm[32];
+} gb28181_digest_challenge_t;
 
 typedef struct gb28181_context_s* gb28181_handle_t;
 
@@ -56,6 +66,15 @@ int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size
 int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc);
 int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out);
+int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out);
+int gb28181_build_digest_authorization(const gb28181_config_t *config,
+                                       const char *method,
+                                       const char *uri,
+                                       const gb28181_digest_challenge_t *challenge,
+                                       char *buf,
+                                       int buf_size);
+int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out);
+int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out);
 
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker);
 
