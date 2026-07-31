@@ -334,6 +334,111 @@ int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size)
         config->stream_id);
 }
 
+static int build_xml_message(const gb28181_config_t *config,
+                             const char *cmd_type,
+                             int sn,
+                             int cseq,
+                             char *buf,
+                             int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !cmd_type || !buf || buf_size <= 0) {
+        return -1;
+    }
+
+    if (strcmp(cmd_type, "Keepalive") == 0) {
+        body_len = snprintf(body, sizeof(body),
+            "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+            "<Notify>\r\n"
+            "<CmdType>Keepalive</CmdType>\r\n"
+            "<SN>%d</SN>\r\n"
+            "<DeviceID>%s</DeviceID>\r\n"
+            "<Status>OK</Status>\r\n"
+            "</Notify>\r\n",
+            sn,
+            config->local_id);
+    } else {
+        body_len = snprintf(body, sizeof(body),
+            "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+            "<Query>\r\n"
+            "<CmdType>Catalog</CmdType>\r\n"
+            "<SN>%d</SN>\r\n"
+            "<DeviceID>%s</DeviceID>\r\n"
+            "</Query>\r\n",
+            sn,
+            config->local_id);
+    }
+
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len,
+        body);
+}
+
+int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    return build_xml_message(config, "Keepalive", cseq, cseq, buf, buf_size);
+}
+
+int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    return build_xml_message(config, "Catalog", cseq, cseq, buf, buf_size);
+}
+
+int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size)
+{
+    char open_tag[64];
+    char close_tag[64];
+    const char *begin;
+    const char *end;
+    size_t len;
+
+    if (!xml || !tag || !buf || buf_size <= 0) {
+        return -1;
+    }
+    snprintf(open_tag, sizeof(open_tag), "<%s>", tag);
+    snprintf(close_tag, sizeof(close_tag), "</%s>", tag);
+    begin = strstr(xml, open_tag);
+    if (!begin) {
+        return -2;
+    }
+    begin += strlen(open_tag);
+    end = strstr(begin, close_tag);
+    if (!end) {
+        return -3;
+    }
+    len = (size_t)(end - begin);
+    if (len >= (size_t)buf_size) {
+        len = (size_t)buf_size - 1;
+    }
+    memcpy(buf, begin, len);
+    buf[len] = '\0';
+    return (int)len;
+}
+
 static int ascii_case_equal_n(const char *a, const char *b, size_t n)
 {
     size_t i;

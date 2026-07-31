@@ -11,10 +11,11 @@ Main study guide:
 - `REGISTER` text generation
 - `INVITE + SDP` text generation
 - `BYE` text generation
+- `MESSAGE` Keepalive and Catalog XML generation
 - Basic SIP response parsing
 - Basic Digest challenge parsing and Authorization building
 - RTP sending through `jrtplib`
-- Minimal SIP UDP register client example
+- Minimal SIP UDP register client and mock server examples
 
 ## Files
 
@@ -35,7 +36,7 @@ cmake --build build
 
 ## Notes
 
-This module is for study. It does not yet implement full SIP socket IO, full SIP state machine, Catalog/Keepalive XML, or full H.264/H.265 RTP packetization.
+This module is for study. It does not yet implement a full SIP state machine, Catalog response list parsing, DeviceInfo/DeviceStatus XML, or full H.264/H.265 RTP packetization.
 
 ## Mock server usage
 
@@ -57,6 +58,10 @@ The flow is:
 REGISTER
 401 Unauthorized
 REGISTER + Authorization
+200 OK
+MESSAGE Keepalive
+200 OK
+MESSAGE Catalog
 200 OK
 INVITE + SDP
 200 OK + SDP

@@ -64,6 +64,9 @@ void gb28181_destroy(gb28181_handle_t handle);
 int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
+int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size);
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc);
 int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
                                int annexb_size,

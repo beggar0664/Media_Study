@@ -81,7 +81,7 @@ static int build_invite_request(const gb28181_config_t *cfg, char *buf, int buf_
         "From: <sip:%s@%s>;tag=gb28181\r\n"
         "To: <sip:%s@%s>\r\n"
         "Call-ID: %s-invite\r\n"
-        "CSeq: 3 INVITE\r\n"
+        "CSeq: 5 INVITE\r\n"
         "Contact: <sip:%s@%s:%d>\r\n"
         "Max-Forwards: 70\r\n"
         "Content-Type: application/sdp\r\n"
@@ -105,7 +105,7 @@ static int build_ack_request(const gb28181_config_t *cfg, char *buf, int buf_siz
         "From: <sip:%s@%s>;tag=gb28181\r\n"
         "To: <sip:%s@%s>;tag=mock\r\n"
         "Call-ID: %s-invite\r\n"
-        "CSeq: 3 ACK\r\n"
+        "CSeq: 5 ACK\r\n"
         "Contact: <sip:%s@%s:%d>\r\n"
         "Max-Forwards: 70\r\n"
         "Content-Length: 0\r\n\r\n",
@@ -125,7 +125,7 @@ static int build_bye_request(const gb28181_config_t *cfg, char *buf, int buf_siz
         "From: <sip:%s@%s>;tag=gb28181\r\n"
         "To: <sip:%s@%s>;tag=mock\r\n"
         "Call-ID: %s-invite\r\n"
-        "CSeq: 4 BYE\r\n"
+        "CSeq: 6 BYE\r\n"
         "Max-Forwards: 70\r\n"
         "Content-Length: 0\r\n\r\n",
         cfg->stream_id, cfg->domain,
@@ -133,6 +133,24 @@ static int build_bye_request(const gb28181_config_t *cfg, char *buf, int buf_siz
         cfg->username, cfg->domain,
         cfg->local_id, cfg->domain,
         cfg->stream_id);
+}
+
+static void send_message_and_print_response(int sockfd,
+                                            const struct sockaddr_in *remote_addr,
+                                            const char *title,
+                                            const char *request,
+                                            char *recv_buf,
+                                            int recv_buf_size)
+{
+    int ret;
+    printf("===== %s =====\n%s\n", title, request);
+    send_sip_message(sockfd, remote_addr, request);
+    ret = recv_sip_message(sockfd, recv_buf, recv_buf_size, 3000);
+    if (ret > 0) {
+        printf("===== %s RESPONSE =====\n%s\n", title, recv_buf);
+    } else {
+        printf("No %s response received\n", title);
+    }
 }
 
 int main(void)
@@ -247,6 +265,10 @@ int main(void)
                             printf("===== SECOND RESPONSE =====\n%s\n", recv_buf);
                             memset(&msg, 0, sizeof(msg));
                             if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && msg.status_code == 200) {
+                                gb28181_build_message_keepalive(&cfg, 3, request, sizeof(request));
+                                send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Keepalive", request, recv_buf, sizeof(recv_buf));
+                                gb28181_build_message_catalog(&cfg, 4, request, sizeof(request));
+                                send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Catalog", request, recv_buf, sizeof(recv_buf));
                                 build_invite_request(&cfg, request, sizeof(request));
                                 printf("===== INVITE + SDP =====\n%s\n", request);
                                 send_sip_message(sockfd, &remote_addr, request);

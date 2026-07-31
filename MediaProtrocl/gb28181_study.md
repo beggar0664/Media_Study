@@ -25,6 +25,8 @@ GB28181 = SIP 信令 + SDP 协商 + RTP/RTCP 承载
 
 GB28181 的重点不在“包里是什么编码帧”，而在“会话怎么建立、媒体参数怎么协商、媒体流怎么按约定送达”。
 
+一个很重要的边界是：`REGISTER / MESSAGE / INVITE / ACK / BYE` 都属于 SIP 信令面；`SDP` 是信令 body 里的媒体描述；`RTP/RTCP` 才是媒体面。学习时不要把 XML 控制消息、SDP 描述文本、RTP payload 混成同一层。
+
 ## 2. GB28181 管什么
 
 GB28181 主要回答这些问题：
@@ -45,6 +47,7 @@ REGISTER
 
 MESSAGE
   -> Keepalive / Catalog / DeviceInfo / DeviceStatus
+  -> MESSAGE 本身是 SIP 方法，具体命令放在 XML body 里
 
 INVITE + SDP
   -> 协商媒体地址、端口、payload type、SSRC、编码名
@@ -116,6 +119,56 @@ SIP/2.0 401 Unauthorized
 - `gb28181_sip_register_client.cpp`：发第一次 `REGISTER`，接 401，再发带 `Authorization` 的第二次 `REGISTER`
 
 这还不是完整 SIP 状态机，但已经足够支撑你下一步接真实 401 响应做学习验证。
+
+### 3.2 MESSAGE、Keepalive 和 Catalog
+
+GB28181 里很多设备控制和查询不是靠新的传输连接完成，而是走 SIP `MESSAGE`。`MESSAGE` 这层仍然是 SIP 报文，头部继续使用 `Via / From / To / Call-ID / CSeq / Content-Type / Content-Length`，真正的业务命令放在 XML body 里。
+
+当前最小模块补了两个学习用构造函数：
+
+- `gb28181_build_message_keepalive()`：设备保活通知。
+- `gb28181_build_message_catalog()`：目录查询请求。
+
+Keepalive 的 body 示例：
+
+```xml
+<?xml version="1.0" encoding="GB2312"?>
+<Notify>
+<CmdType>Keepalive</CmdType>
+<SN>3</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<Status>OK</Status>
+</Notify>
+```
+
+Catalog 查询的 body 示例：
+
+```xml
+<?xml version="1.0" encoding="GB2312"?>
+<Query>
+<CmdType>Catalog</CmdType>
+<SN>4</SN>
+<DeviceID>34020000001320000001</DeviceID>
+</Query>
+```
+
+外层 SIP 报文里重点看：
+
+| 字段 | 学习重点 |
+|---|---|
+| `MESSAGE sip:... SIP/2.0` | 说明这是 SIP MESSAGE 方法，不是媒体数据 |
+| `CSeq: 3 MESSAGE` | 同一端发出的事务序号，便于跟响应配对 |
+| `Content-Type: Application/MANSCDP+xml` | GB28181 常用 XML 控制体 |
+| `Content-Length` | XML body 的字节长度 |
+| XML `<CmdType>` | 真正的业务命令，例如 `Keepalive` / `Catalog` |
+
+抓包过滤可以用：
+
+```text
+sip || udp.port == 5060 || udp.port == 5062
+```
+
+在 Wireshark 里选中 `MESSAGE` 报文后，看两层内容：先看 SIP header 确认事务，再展开 message body 看 XML 的 `<CmdType>`、`<SN>`、`<DeviceID>`。这里没有 RTP，也没有 PS/PES/NALU，因为它是控制面消息。
 
 ## 4. SDP 是什么
 
@@ -244,8 +297,10 @@ E:\code\Media\MediaProtrocl\GB28181
 1. `REGISTER` 文本生成。
 2. `INVITE + SDP` 文本生成。
 3. `BYE` 文本生成。
-4. SIP 响应的基础头字段解析。
-5. 使用 `jrtplib` 建立 RTP 会话并发送 payload。
+4. `MESSAGE Keepalive / Catalog` 文本和 XML body 生成。
+5. SIP 响应的基础头字段解析。
+6. 从 XML body 提取 `<CmdType>` 等简单字段。
+7. 使用 `jrtplib` 建立 RTP 会话并发送 payload。
 
 ### 8.1 `gb28181_module.h` 的边界
 
@@ -255,6 +310,8 @@ E:\code\Media\MediaProtrocl\GB28181
 - `gb28181_sip_message_t`：SIP 解析结果
 - `gb28181_create / start / stop / destroy`：生命周期
 - `gb28181_build_register / invite / bye / sdp`：报文构造
+- `gb28181_build_message_keepalive / catalog`：MESSAGE + XML 构造
+- `gb28181_extract_xml_tag`：学习用 XML 标签提取
 - `gb28181_parse_sip_message`：基础响应解析
 - `gb28181_send_rtp_packet`：RTP 发送
 
@@ -283,10 +340,10 @@ gb28181_send_rtp_packet()
 
 现在的模块适合学习，不是完整国标设备端。还缺这些能力：
 
-- SIP UDP/TCP 收发循环
+- 完整 SIP UDP/TCP 收发框架
 - 完整 SIP 客户端状态机
-- `MESSAGE` Keepalive
-- Catalog / DeviceInfo / DeviceStatus XML
+- Catalog 响应列表解析
+- DeviceInfo / DeviceStatus XML
 - INVITE / ACK / BYE 的完整 dialog 状态管理
 - H.264 / H.265 RTP 分片器，例如 H.264 FU-A、H.265 FU
 - RTP over TCP 或国标主动/被动模式
@@ -326,6 +383,10 @@ gb28181_sip_register_client.exe
   -> 401 Unauthorized
   -> 第二次 REGISTER + Authorization
   -> 200 OK
+  -> MESSAGE Keepalive
+  -> 200 OK
+  -> MESSAGE Catalog
+  -> 200 OK
   -> INVITE + SDP
   -> 200 OK + SDP
   -> ACK
@@ -338,6 +399,7 @@ gb28181_sip_register_client.exe
 - SIP 报文头是否能被正确解析
 - Digest 的 `realm / nonce / qop` 是否能被正确提取
 - `Authorization` 是否能被正确生成并回送
+- MESSAGE XML 的 `<CmdType>`、`<SN>`、`<DeviceID>` 是否能被识别
 - `INVITE / ACK / BYE` 的最小会话状态是否能跑通
 
 ### 10.2 下一步：PS over RTP

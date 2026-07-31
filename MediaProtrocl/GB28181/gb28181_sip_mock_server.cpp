@@ -160,6 +160,36 @@ int main(void)
             continue;
         }
 
+        if (registered && strcmp(msg.method, "MESSAGE") == 0) {
+            char cmd_type[64];
+            char sn[64];
+            char device_id[64];
+            cmd_type[0] = '\0';
+            sn[0] = '\0';
+            device_id[0] = '\0';
+            if (msg.body) {
+                gb28181_extract_xml_tag(msg.body, "CmdType", cmd_type, sizeof(cmd_type));
+                gb28181_extract_xml_tag(msg.body, "SN", sn, sizeof(sn));
+                gb28181_extract_xml_tag(msg.body, "DeviceID", device_id, sizeof(device_id));
+            }
+            printf("MESSAGE xml CmdType=%s SN=%s DeviceID=%s\n",
+                   cmd_type[0] ? cmd_type : "<none>",
+                   sn[0] ? sn : "<none>",
+                   device_id[0] ? device_id : "<none>");
+            snprintf(reply, sizeof(reply),
+                "SIP/2.0 200 OK\r\n"
+                "Via: %s\r\n"
+                "From: %s\r\n"
+                "To: %s\r\n"
+                "Call-ID: %s\r\n"
+                "CSeq: %d MESSAGE\r\n"
+                "Content-Length: 0\r\n\r\n",
+                msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
+            printf("===== TX MESSAGE 200 =====\n%s\n", reply);
+            send_reply(sockfd, &peer, reply);
+            continue;
+        }
+
         if (registered && strcmp(msg.method, "INVITE") == 0) {
             char sdp[1024];
             int sdp_len;
