@@ -26,6 +26,17 @@ int main(void)
         0x65, 0x88, 0x84, 0x21, 0xa0, 0x10, 0x11, 0x12,
         0x13, 0x14, 0x15, 0x16, 0x17, 0x18
     };
+    const unsigned char demo_h264_annexb[] = {
+        0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1f,
+        0xac, 0xd9, 0x40, 0x78, 0x02, 0x27, 0xe5, 0xc0,
+        0x00, 0x00, 0x00, 0x01, 0x68, 0xeb, 0xec, 0xb2,
+        0x2c,
+        0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21,
+        0xa0, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+        0x17, 0x18
+    };
+    unsigned char demo_ps_pack[512];
+    int demo_ps_len;
     gb28181_handle_t handle;
     int ret;
     int local_rtp_port = 0;
@@ -49,10 +60,18 @@ int main(void)
     gb28181_build_register(&cfg, register_msg, sizeof(register_msg));
     gb28181_build_invite(&cfg, invite_msg, sizeof(invite_msg));
     gb28181_build_bye(&cfg, bye_msg, sizeof(bye_msg));
+    demo_ps_len = gb28181_build_ps_pack_h264(demo_h264_annexb, (int)sizeof(demo_h264_annexb), 9000, 9000, demo_ps_pack, (int)sizeof(demo_ps_pack));
 
     printf("===== REGISTER =====\n%s\n", register_msg);
     printf("===== INVITE + SDP =====\n%s\n", invite_msg);
     printf("===== BYE =====\n%s\n", bye_msg);
+    if (demo_ps_len > 0) {
+        int i;
+        printf("===== PS PACK (H.264) len=%d =====\n", demo_ps_len);
+        for (i = 0; i < demo_ps_len; ++i) {
+            printf("%02X%c", demo_ps_pack[i], ((i + 1) % 16 == 0 || i + 1 == demo_ps_len) ? '\n' : ' ');
+        }
+    }
 
     printf("[1/4] create context\n");
     handle = gb28181_create(&cfg);
@@ -83,6 +102,11 @@ int main(void)
         if (ret >= 0) {
             ret = gb28181_send_rtp_packet(handle, demo_h264_idr, sizeof(demo_h264_idr), 9000, 1);
             printf("[3/4] send IDR ret=%d len=%u timestamp_inc=%u marker=1\n", ret, (unsigned)sizeof(demo_h264_idr), 9000u);
+        }
+        if (ret >= 0 && demo_ps_len > 0) {
+            printf("sending one PS-over-RTP packet: PS pack -> PES -> H.264 IDR\n");
+            ret = gb28181_send_rtp_packet(handle, demo_ps_pack, demo_ps_len, 9000, 1);
+            printf("[3/4] send PS ret=%d len=%u timestamp_inc=%u marker=1\n", ret, (unsigned)demo_ps_len, 9000u);
         }
 #ifdef _WIN32
         Sleep(5000);

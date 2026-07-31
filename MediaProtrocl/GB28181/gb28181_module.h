@@ -65,6 +65,12 @@ int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_si
 int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc);
+int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
+                               int annexb_size,
+                               unsigned int pts_90khz,
+                               unsigned int dts_90khz,
+                               unsigned char *out_buf,
+                               int out_buf_size);
 int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out);
 int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out);
 int gb28181_build_digest_authorization(const gb28181_config_t *config,

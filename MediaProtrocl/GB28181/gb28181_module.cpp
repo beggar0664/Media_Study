@@ -12,6 +12,7 @@
 #include "rtpudpv4transmitter.h"
 
 #include <ctype.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -436,6 +437,124 @@ static void md5_concat_hex(char out_hex[33], const char *a, const char *b, const
     char buf[1024];
     snprintf(buf, sizeof(buf), "%s%s%s", a, b, c);
     md5_hex((const unsigned char *)buf, strlen(buf), out_hex);
+}
+
+static void write_u16_be(unsigned char *dst, unsigned short value)
+{
+    dst[0] = (unsigned char)((value >> 8) & 0xFF);
+    dst[1] = (unsigned char)(value & 0xFF);
+}
+
+static void write_u32_be(unsigned char *dst, unsigned int value)
+{
+    dst[0] = (unsigned char)((value >> 24) & 0xFF);
+    dst[1] = (unsigned char)((value >> 16) & 0xFF);
+    dst[2] = (unsigned char)((value >> 8) & 0xFF);
+    dst[3] = (unsigned char)(value & 0xFF);
+}
+
+static int find_nal_start_code(const unsigned char *data, int size, int offset)
+{
+    int i;
+    for (i = offset; i + 3 <= size; ++i) {
+        if (i + 4 <= size && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x00 && data[i + 3] == 0x01) {
+            return i;
+        }
+        if (data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x01) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int find_next_nal_start_code(const unsigned char *data, int size, int offset)
+{
+    int i;
+    for (i = offset; i + 3 <= size; ++i) {
+        if (i + 4 <= size && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x00 && data[i + 3] == 0x01) {
+            return i;
+        }
+        if (data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x01) {
+            return i;
+        }
+    }
+    return size;
+}
+
+static int build_pts(unsigned char *dst, unsigned char fb, unsigned long long ts)
+{
+    unsigned long long val = ts & 0x1FFFFFFFFULL;
+    dst[0] = (unsigned char)((fb << 4) | (((val >> 30) & 0x07) << 1) | 1);
+    dst[1] = (unsigned char)((val >> 22) & 0xFF);
+    dst[2] = (unsigned char)((((val >> 15) & 0x7F) << 1) | 1);
+    dst[3] = (unsigned char)((val >> 7) & 0xFF);
+    dst[4] = (unsigned char)((((val & 0x7F) << 1) | 1));
+    return 5;
+}
+
+int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
+                               int annexb_size,
+                               unsigned int pts_90khz,
+                               unsigned int dts_90khz,
+                               unsigned char *out_buf,
+                               int out_buf_size)
+{
+    int es_start;
+    int es_payload_len;
+    int pes_len;
+    int pes_header_data_len;
+    int payload_len;
+    unsigned char *p;
+
+    (void)dts_90khz;
+
+    if (!annexb_data || annexb_size <= 0 || !out_buf || out_buf_size <= 0) {
+        return -1;
+    }
+
+    es_start = find_nal_start_code(annexb_data, annexb_size, 0);
+    if (es_start < 0) {
+        return -2;
+    }
+
+    es_payload_len = annexb_size - es_start;
+    if (es_payload_len <= 0) {
+        return -3;
+    }
+
+    pes_header_data_len = 5; /* PTS only */
+    pes_len = 3 + 1 + 2 + 3 + pes_header_data_len + es_payload_len;
+    payload_len = 4 + 3 + 1 + 2 + 3 + pes_header_data_len + es_payload_len;
+    if (payload_len > out_buf_size) {
+        return -4;
+    }
+
+    p = out_buf;
+    write_u32_be(p, 0x000001BA);
+    p += 4;
+    *p++ = 0x44;
+    *p++ = 0x00;
+    *p++ = 0x04;
+    *p++ = 0x00;
+    *p++ = 0x04;
+    *p++ = 0x01;
+    *p++ = 0x89;
+    *p++ = 0xC3;
+
+    write_u32_be(p, 0x000001E0);
+    p += 4;
+    write_u16_be(p, (unsigned short)(pes_len - 6));
+    p += 2;
+    *p++ = 0x80;
+    *p++ = 0x80;
+    *p++ = (unsigned char)pes_header_data_len;
+    build_pts(p, 0x02, pts_90khz);
+    p += 5;
+
+    memcpy(p, annexb_data + es_start, (size_t)es_payload_len);
+    p += es_payload_len;
+
+    return (int)(p - out_buf);
 }
 
 static void parse_header(gb28181_sip_message_t *out, const char *name, size_t name_len, const char *value_begin, const char *value_end)

@@ -340,6 +340,37 @@ gb28181_sip_register_client.exe
 - `Authorization` 是否能被正确生成并回送
 - `INVITE / ACK / BYE` 的最小会话状态是否能跑通
 
+### 10.2 下一步：PS over RTP
+
+在国标场景里，常见媒体链路不是直接把 H.264 NALU 扔给对端，而是：
+
+```text
+H.264 NALU
+  -> PES
+  -> PS
+  -> RTP
+```
+
+所以下一步的学习重点是：
+
+- 看懂 PS pack header / PES header / PTS
+- 看懂 RTP payload 里装的是 PS 还是裸 H.264
+- 用 WinHex 比对 `00 00 01 BA`、`00 00 01 E0` 和 PES 里的 NALU 起始码
+
+当前 `gb28181_minimal_example.exe` 会连续演示两种 RTP payload：
+
+```text
+裸 H.264 over RTP:
+  RTP payload 第一个字节通常是 67 / 68 / 65 等 NALU 头
+
+PS over RTP:
+  RTP payload 以 00 00 01 BA 开始
+  后面能看到 00 00 01 E0 视频 PES
+  PES payload 中保留 Annex-B 起始码: 00 00 00 01 67 / 68 / 65
+```
+
+抓包学习时可以直接看 RTP payload 开头：如果是 `65`，说明 payload 是 H.264 IDR NALU；如果是 `00 00 01 BA`，说明 payload 是 PS pack。
+
 ## 11. 典型误区
 
 ### 11.1 把 GB28181 当成 RTP
