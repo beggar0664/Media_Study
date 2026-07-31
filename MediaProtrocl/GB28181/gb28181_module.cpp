@@ -809,3 +809,32 @@ int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int pa
     ctx->rtp_seq++;
     return payload_size;
 }
+
+int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
+                                        const void *payload,
+                                        int payload_size,
+                                        int max_payload_size,
+                                        unsigned int timestamp_inc)
+{
+    const unsigned char *data = (const unsigned char *)payload;
+    int offset = 0;
+    int total_sent = 0;
+
+    if (!handle || !payload || payload_size <= 0 || max_payload_size <= 0) {
+        return -1;
+    }
+
+    while (offset < payload_size) {
+        int remaining = payload_size - offset;
+        int chunk = remaining > max_payload_size ? max_payload_size : remaining;
+        int is_last = (offset + chunk) >= payload_size;
+        int ret = gb28181_send_rtp_packet(handle, data + offset, chunk, is_last ? timestamp_inc : 0, is_last ? 1 : 0);
+        if (ret < 0) {
+            return ret;
+        }
+        total_sent += ret;
+        offset += chunk;
+    }
+
+    return total_sent;
+}

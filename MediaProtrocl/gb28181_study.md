@@ -371,6 +371,24 @@ PS over RTP:
 
 抓包学习时可以直接看 RTP payload 开头：如果是 `65`，说明 payload 是 H.264 IDR NALU；如果是 `00 00 01 BA`，说明 payload 是 PS pack。
 
+当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
+
+```text
+RTP packet #1: marker=0, timestamp 不递增，payload 是 PS 的前半段
+RTP packet #2: marker=0, timestamp 不递增，payload 是 PS 的中间段
+RTP packet #N: marker=1, timestamp 递增，payload 是 PS 的最后一段
+```
+
+当前 `gb28181_minimal_example.exe` 也会用 `max_payload=24` 强制演示一次 PS over RTP 分片，便于抓包观察同一个 PS pack 被拆进多个 RTP 包后的 `sequence number / marker / timestamp` 变化。
+
+示例里还保留一个更接近工程参数的发送路径：
+
+```text
+normal max_payload=1200
+```
+
+它用一段更大的模拟 H.264 Annex-B 数据生成 PS，再按 1200 字节左右切 RTP payload。真实工程通常会让前面的 RTP payload 尽量接近 1200/1400，最后一包发剩余数据，避免超过 MTU 后触发 IP 分片。
+
 ## 11. 典型误区
 
 ### 11.1 把 GB28181 当成 RTP

@@ -36,7 +36,11 @@ int main(void)
         0x17, 0x18
     };
     unsigned char demo_ps_pack[512];
+    unsigned char normal_h264_annexb[2048];
+    unsigned char normal_ps_pack[4096];
     int demo_ps_len;
+    int normal_h264_len = 0;
+    int normal_ps_len;
     gb28181_handle_t handle;
     int ret;
     int local_rtp_port = 0;
@@ -57,10 +61,17 @@ int main(void)
     cfg.payload_type = 96;
     cfg.ssrc = 0x12345678;
 
+    memcpy(normal_h264_annexb + normal_h264_len, demo_h264_annexb, sizeof(demo_h264_annexb));
+    normal_h264_len += (int)sizeof(demo_h264_annexb);
+    for (; normal_h264_len < 1800; ++normal_h264_len) {
+        normal_h264_annexb[normal_h264_len] = (unsigned char)(normal_h264_len & 0xFF);
+    }
+
     gb28181_build_register(&cfg, register_msg, sizeof(register_msg));
     gb28181_build_invite(&cfg, invite_msg, sizeof(invite_msg));
     gb28181_build_bye(&cfg, bye_msg, sizeof(bye_msg));
     demo_ps_len = gb28181_build_ps_pack_h264(demo_h264_annexb, (int)sizeof(demo_h264_annexb), 9000, 9000, demo_ps_pack, (int)sizeof(demo_ps_pack));
+    normal_ps_len = gb28181_build_ps_pack_h264(normal_h264_annexb, normal_h264_len, 18000, 18000, normal_ps_pack, (int)sizeof(normal_ps_pack));
 
     printf("===== REGISTER =====\n%s\n", register_msg);
     printf("===== INVITE + SDP =====\n%s\n", invite_msg);
@@ -71,6 +82,9 @@ int main(void)
         for (i = 0; i < demo_ps_len; ++i) {
             printf("%02X%c", demo_ps_pack[i], ((i + 1) % 16 == 0 || i + 1 == demo_ps_len) ? '\n' : ' ');
         }
+    }
+    if (normal_ps_len > 0) {
+        printf("===== NORMAL PS PACK len=%d, normal max_payload=1200 =====\n", normal_ps_len);
     }
 
     printf("[1/4] create context\n");
@@ -107,6 +121,16 @@ int main(void)
             printf("sending one PS-over-RTP packet: PS pack -> PES -> H.264 IDR\n");
             ret = gb28181_send_rtp_packet(handle, demo_ps_pack, demo_ps_len, 9000, 1);
             printf("[3/4] send PS ret=%d len=%u timestamp_inc=%u marker=1\n", ret, (unsigned)demo_ps_len, 9000u);
+        }
+        if (ret >= 0 && demo_ps_len > 0) {
+            printf("sending fragmented PS-over-RTP packets: max_payload=24\n");
+            ret = gb28181_send_rtp_payload_fragmented(handle, demo_ps_pack, demo_ps_len, 24, 9000);
+            printf("[3/4] send fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)demo_ps_len, 9000u);
+        }
+        if (ret >= 0 && normal_ps_len > 0) {
+            printf("sending normal PS-over-RTP packets: max_payload=1200\n");
+            ret = gb28181_send_rtp_payload_fragmented(handle, normal_ps_pack, normal_ps_len, 1200, 9000);
+            printf("[3/4] send normal fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)normal_ps_len, 9000u);
         }
 #ifdef _WIN32
         Sleep(5000);

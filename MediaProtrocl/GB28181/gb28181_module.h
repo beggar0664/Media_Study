@@ -83,6 +83,11 @@ int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out);
 int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out);
 
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker);
+int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
+                                        const void *payload,
+                                        int payload_size,
+                                        int max_payload_size,
+                                        unsigned int timestamp_inc);
 
 #ifdef __cplusplus
 }
