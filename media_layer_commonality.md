@@ -206,6 +206,106 @@ RTSP、RTMP、ONVIF、GB28181、WebRTC 的共性不是包格式相同，而是�
 - 工程上通常都会做认证或授权
 - 越是公网、平台化、安防场景，鉴权越是必需
 
+### 4.2 媒体参数描述层
+
+学习 RTSP、GB28181、ONVIF、RTMP 时，会反复遇到一个问题：对端怎么知道这一路流是什么编码、用什么端口、payload type 是多少、分辨率和采样率是多少、解码初始化参数在哪里。
+
+这类信息可以统一理解成“媒体参数描述层”。它的职责不是传真实音视频帧，而是告诉接收端如何理解后续媒体数据。
+
+不同协议使用的形式不同：
+
+| 协议/体系 | 是否直接使用 SDP | 类似 SDP 的信息载体 | 主要作用 |
+|---|---:|---|---|
+| RTSP | 是 | `DESCRIBE` 返回的 SDP | 描述 RTP 媒体流、payload type、编码、控制 URL |
+| GB28181 | 是 | `INVITE` / `200 OK` body 中的 SDP | 协商 RTP 地址、端口、payload type、SSRC、方向 |
+| ONVIF | 本身不直接依赖 SDP | SOAP/XML 的 Profile、EncoderConfig、StreamUri | 查询设备能力、编码配置、通道，并获取 RTSP URL |
+| RTMP | 否 | AMF `onMetaData` + codec sequence header | 描述宽高、帧率、音频参数，并传 SPS/PPS/VPS、AAC config |
+| WebRTC | 是 | SDP Offer/Answer | 协商 codec、payload type、ICE、DTLS-SRTP、RTCP feedback |
+
+可以把它抽象成：
+
+```text
+媒体参数描述层 = 告诉接收端“后面的媒体数据应该怎么解释”
+```
+
+#### RTSP / GB28181：SDP
+
+RTSP 和 GB28181 都常用 SDP。区别是外层信令不同：RTSP 通过 `DESCRIBE` 获取 SDP，GB28181 通过 SIP `INVITE` 和 `200 OK` 携带 SDP。
+
+典型 SDP 字段：
+
+| 字段 | 作用 |
+|---|---|
+| `m=video 10000 RTP/AVP 96` | 媒体类型、端口、RTP profile、payload type |
+| `a=rtpmap:96 H264/90000` | payload type 96 对应 H.264，90k 时钟 |
+| `a=control:trackID=1` | RTSP 中常见，表示 SETUP 控制的 track |
+| `a=sendonly` / `a=recvonly` | 发送/接收方向，GB28181 中常见 |
+| `a=ssrc:0305419896` | RTP 同步源标识，GB28181 中常见 |
+
+SDP 只描述媒体，不承载媒体。真正的数据仍然走 RTP/RTCP。
+
+#### ONVIF：SOAP/XML + RTSP SDP
+
+ONVIF 更像设备管理和能力查询体系。它本身通常不直接传媒体，也不靠 SDP 完成媒体协商，而是用 SOAP/XML 查询：
+
+- `GetProfiles`：有哪些媒体 profile。
+- `GetVideoEncoderConfiguration`：视频编码、分辨率、帧率、码率等配置。
+- `GetAudioEncoderConfiguration`：音频编码、采样率、通道等配置。
+- `GetStreamUri`：获取 RTSP URL。
+
+拿到 RTSP URL 后，真正拉流通常还是进入 RTSP：
+
+```text
+ONVIF GetStreamUri
+  -> rtsp://192.168.1.100:554/Streaming/Channels/101
+  -> RTSP DESCRIBE
+  -> SDP
+  -> RTSP SETUP / PLAY
+  -> RTP/RTCP
+```
+
+所以 ONVIF 的位置可以理解为：先发现和管理设备，再把媒体播放交给 RTSP/RTP。
+
+#### RTMP：AMF metadata + sequence header
+
+RTMP 不使用 SDP。它把媒体参数放在 RTMP message 里，常见两类：
+
+第一类是 AMF `onMetaData`：
+
+```text
+width
+height
+framerate
+videocodecid
+audiocodecid
+audiosamplerate
+audiosamplesize
+stereo
+```
+
+第二类是 codec sequence header：
+
+```text
+H.264 AVC sequence header -> AVCDecoderConfigurationRecord -> SPS/PPS
+H.265 HEVC sequence header -> HEVCDecoderConfigurationRecord -> VPS/SPS/PPS
+AAC sequence header       -> AudioSpecificConfig
+```
+
+因此 RTMP 的“媒体描述”不是一段 SDP 文本，而是分散在 metadata 和编码初始化包里。播放器或服务器需要先读到这些信息，才能正确解释后续 audio/video message。
+
+#### 容器层也有自己的媒体描述
+
+媒体参数描述不只存在于传输协议里，容器层也有自己的表达方式：
+
+| 容器 | 媒体描述位置 |
+|---|---|
+| PS | PSM、PES stream_id、编码层 SPS/PPS/VPS |
+| TS | PAT/PMT、stream_type、PES、编码层 SPS/PPS/VPS |
+| FLV | metadata tag、AVC/AAC/HEVC sequence header |
+| MP4 | `moov`、`trak`、`stsd`、`avcC`、`hvcC`、`esds` |
+
+这也是为什么分层很重要：协议层的 SDP/metadata 解决“网络会话如何收这路流”，容器层的头和 box 解决“这段字节内部如何组织”，编码层的 SPS/PPS/VPS 解决“解码器如何初始化”。三者可能重复表达编码信息，但职责不同。
+
 ## 5. 媒体传输层的个性
 
 ### 5.1 RTSP
