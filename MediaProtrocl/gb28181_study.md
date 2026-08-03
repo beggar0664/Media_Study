@@ -60,6 +60,29 @@ BYE
   -> 结束会话
 ```
 
+完整最小交互图可以这样看：
+
+```mermaid
+sequenceDiagram
+    participant Device as GB28181 Device
+    participant Platform as SIP Platform
+
+    Device->>Platform: REGISTER
+    Platform-->>Device: 401 Unauthorized
+    Device->>Platform: REGISTER + Authorization
+    Platform-->>Device: 200 OK
+    Device->>Platform: MESSAGE Keepalive XML
+    Platform-->>Device: 200 OK
+    Device->>Platform: MESSAGE Catalog XML
+    Platform-->>Device: 200 OK
+    Device->>Platform: INVITE + SDP
+    Platform-->>Device: 200 OK + SDP
+    Device->>Platform: ACK
+    Device->>Platform: RTP/PS media stream
+    Device->>Platform: BYE
+    Platform-->>Device: 200 OK
+```
+
 ## 3. SIP 是什么
 
 SIP 是 GB28181 的事务和会话控制语言。它负责“谁和谁说话、说什么、什么时候结束”，但不直接承载音视频字节。
@@ -107,6 +130,18 @@ SIP/2.0 401 Unauthorized
   -> 响应头里带 WWW-Authenticate: Digest realm=..., nonce=...
   -> 设备计算 Authorization: Digest ... response=...
   -> 再次发送 REGISTER / INVITE
+```
+
+```mermaid
+sequenceDiagram
+    participant Device as Device
+    participant Platform as Platform
+
+    Device->>Platform: REGISTER without Authorization
+    Platform-->>Device: 401 Unauthorized + WWW-Authenticate
+    Device->>Device: HA1/HA2/response MD5
+    Device->>Platform: REGISTER + Authorization
+    Platform-->>Device: 200 OK
 ```
 
 当前最小模块已经补了两块底座：
@@ -170,6 +205,21 @@ sip || udp.port == 5060 || udp.port == 5062
 
 在 Wireshark 里选中 `MESSAGE` 报文后，看两层内容：先看 SIP header 确认事务，再展开 message body 看 XML 的 `<CmdType>`、`<SN>`、`<DeviceID>`。这里没有 RTP，也没有 PS/PES/NALU，因为它是控制面消息。
 
+MESSAGE 的最小交互图：
+
+```mermaid
+sequenceDiagram
+    participant Device as Device
+    participant Platform as Platform
+
+    Device->>Platform: MESSAGE Keepalive XML
+    Note right of Device: CmdType=Keepalive<br/>Status=OK
+    Platform-->>Device: 200 OK
+    Device->>Platform: MESSAGE Catalog Query XML
+    Note right of Device: CmdType=Catalog<br/>DeviceID=...
+    Platform-->>Device: 200 OK
+```
+
 ## 4. SDP 是什么
 
 SDP 是 SIP body 里的媒体描述文本。它不传媒体数据，只告诉对端“媒体要怎么传”。
@@ -204,6 +254,21 @@ a=ssrc:0300000001
 | `a=ssrc:...` | RTP 同步源标识 |
 
 要特别注意：`m=` 行里的端口和 IP 是 RTP 传输端口，不是 SIP 5060 端口。SIP 负责谈事，RTP 负责传媒体。
+
+INVITE/SDP 建立媒体会话的时序：
+
+```mermaid
+sequenceDiagram
+    participant Device as Device
+    participant Platform as Platform
+
+    Device->>Platform: INVITE + SDP sendonly / RTP port / PT / SSRC
+    Platform-->>Device: 200 OK + SDP recvonly / RTP port / PT / SSRC
+    Device->>Platform: ACK
+    Device->>Platform: RTP packets
+    Device->>Platform: BYE
+    Platform-->>Device: 200 OK
+```
 
 ### 4.1 SDP 和容器头是不是重叠
 
@@ -413,6 +478,21 @@ H.264 NALU
   -> RTP
 ```
 
+对应分层图：
+
+```mermaid
+flowchart TD
+    A[H.264/H.265 NALU] --> B[PES]
+    B --> C[PS]
+    C --> D[RTP payload]
+    D --> E[UDP/IP]
+
+    A -. 编码层 .-> A1[SPS/PPS/IDR]
+    B -. 容器层 .-> B1[PTS/DTS stream_id]
+    C -. 容器层 .-> C1[pack header PSM]
+    D -. 传输层 .-> D1[PT Seq Timestamp Marker SSRC]
+```
+
 所以下一步的学习重点是：
 
 - 看懂 PS pack header / PES header / PTS
@@ -439,6 +519,19 @@ PS over RTP:
 RTP packet #1: marker=0, timestamp 不递增，payload 是 PS 的前半段
 RTP packet #2: marker=0, timestamp 不递增，payload 是 PS 的中间段
 RTP packet #N: marker=1, timestamp 递增，payload 是 PS 的最后一段
+```
+
+分片时序可以这样看：
+
+```mermaid
+sequenceDiagram
+    participant Sender as RTP Sender
+    participant Receiver as RTP Receiver
+
+    Sender->>Receiver: RTP seq=N timestamp=T marker=0 payload=PS part 1
+    Sender->>Receiver: RTP seq=N+1 timestamp=T marker=0 payload=PS part 2
+    Sender->>Receiver: RTP seq=N+2 timestamp=T marker=1 payload=PS last part
+    Receiver->>Receiver: Reassemble payload by seq/timestamp
 ```
 
 当前 `gb28181_minimal_example.exe` 也会用 `max_payload=24` 强制演示一次 PS over RTP 分片，便于抓包观察同一个 PS pack 被拆进多个 RTP 包后的 `sequence number / marker / timestamp` 变化。

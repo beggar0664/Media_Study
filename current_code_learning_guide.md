@@ -4,6 +4,23 @@
 
 当前最适合从 GB28181 模块开始，因为它已经具备最小可运行闭环：SIP 注册鉴权、MESSAGE Keepalive/Catalog、INVITE/SDP、BYE，以及 RTP/PS over RTP 示例。
 
+## 0. 当前代码入口图
+
+```mermaid
+flowchart TD
+    A[current_code_learning_guide.md] --> B[media_layer_commonality.md]
+    A --> C[MediaProtrocl/gb28181_study.md]
+    C --> D[gb28181_module.h]
+    D --> E[gb28181_sip_register_client.cpp]
+    D --> F[gb28181_sip_mock_server.cpp]
+    D --> G[gb28181_minimal_example.cpp]
+    E --> H[Wireshark: SIP 5060/5062]
+    F --> H
+    G --> I[Wireshark: RTP 30000]
+```
+
+这张图的读法是：先读总纲，再看 GB28181 模块接口，随后分别跑 SIP client/server 和 RTP 示例，用抓包反向验证字段。
+
 ## 1. 先建立分层概念
 
 先读：
@@ -62,6 +79,29 @@ INVITE + SDP
 ACK
 BYE
 200 OK
+```
+
+对应时序图：
+
+```mermaid
+sequenceDiagram
+    participant Client as gb28181_sip_register_client
+    participant Server as gb28181_sip_mock_server
+
+    Client->>Server: REGISTER without Authorization
+    Server-->>Client: 401 Unauthorized + WWW-Authenticate
+    Client->>Client: Parse challenge and calculate Digest
+    Client->>Server: REGISTER + Authorization
+    Server-->>Client: 200 OK
+    Client->>Server: MESSAGE Keepalive XML
+    Server-->>Client: 200 OK
+    Client->>Server: MESSAGE Catalog XML
+    Server-->>Client: 200 OK
+    Client->>Server: INVITE + SDP
+    Server-->>Client: 200 OK + SDP
+    Client->>Server: ACK
+    Client->>Server: BYE
+    Server-->>Client: 200 OK
 ```
 
 这一阶段只看 SIP 信令，不看 RTP 媒体数据。
@@ -146,6 +186,16 @@ PS over RTP:
 00 00 00 01 67 -> SPS
 00 00 00 01 68 -> PPS
 00 00 00 01 65 -> IDR
+```
+
+PS over RTP 的载荷关系图：
+
+```mermaid
+flowchart TD
+    A[H.264 Annex-B NALU] --> B[PES video stream_id 0xE0]
+    B --> C[PS pack start code 00 00 01 BA]
+    C --> D[RTP payload]
+    D --> E[UDP 127.0.0.1:30000]
 ```
 
 ## 5. 按顺序读代码

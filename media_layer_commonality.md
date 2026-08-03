@@ -14,6 +14,25 @@
 网络传输层: UDP / TCP / TLS / DTLS
 ```
 
+整体层次可以先画成这张图：
+
+```mermaid
+flowchart TD
+    A[编码层<br/>H.264 H.265 AAC] --> B[容器层<br/>PS TS FLV MP4]
+    A --> C[媒体参数描述层<br/>SDP AMF metadata avcC hvcC]
+    C --> D[媒体传输/信令层<br/>RTSP RTMP ONVIF GB28181 WebRTC]
+    B --> D
+    D --> E[网络传输层<br/>UDP TCP TLS DTLS]
+
+    A -. 解决 .-> A1[内容如何解码]
+    B -. 解决 .-> B1[字节如何装箱]
+    C -. 解决 .-> C1[对端如何理解媒体参数]
+    D -. 解决 .-> D1[会话如何建立和传输]
+    E -. 解决 .-> E1[数据如何到达]
+```
+
+注意：真实链路不一定每次都显式出现容器层。例如 RTSP/RTP 可以直接承载 H.264 RTP payload；GB28181 场景常见 RTP payload 里再套 PS；RTMP 则常把 FLV tag 语义放进 RTMP message。
+
 ## 1. 总体边界
 
 ### 1.1 容器层在做什么
