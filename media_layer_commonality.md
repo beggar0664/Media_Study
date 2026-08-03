@@ -225,7 +225,68 @@ RTSP、RTMP、ONVIF、GB28181、WebRTC 的共性不是包格式相同，而是�
 - 工程上通常都会做认证或授权
 - 越是公网、平台化、安防场景，鉴权越是必需
 
-### 4.2 媒体参数描述层
+### 4.2 媒体传输协议体系的再细分
+
+RTSP、RTMP、WebRTC、GB28181、ONVIF 都和媒体传输有关，但它们不是完全同一类东西。更准确的说法是：它们分别覆盖了媒体传输体系里的不同子层。
+
+可以先拆成这些子层：
+
+| 子层 | 解决的问题 |
+|---|---|
+| 设备/资源发现层 | 怎么找到设备、通道、房间、流地址 |
+| 信令/会话控制层 | 怎么建立、开始、暂停、结束会话 |
+| 认证鉴权层 | 怎么证明身份、控制资源访问权限 |
+| 媒体参数描述/协商层 | 怎么告诉对端编码、端口、payload type、加密参数 |
+| 媒体承载层 | 真正的音视频字节怎么在网络上传 |
+| 质量反馈/控制层 | 怎么处理丢包、抖动、重传、带宽估计 |
+| 设备管理/业务控制层 | 怎么做目录、配置、PTZ、报警、状态查询 |
+| 底层网络传输层 | 使用 TCP、UDP、TLS、DTLS 等哪种传输基础 |
+
+横向看五个协议/体系：
+
+| 子层 | RTSP | RTMP | WebRTC | GB28181 | ONVIF |
+|---|---|---|---|---|---|
+| 设备/资源发现 | 通常直接给 RTSP URL | 通常业务系统给 RTMP URL | 业务信令给房间/用户信息 | SIP 注册、Catalog | WS-Discovery、GetCapabilities |
+| 信令/会话控制 | `OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN` | `connect/createStream/publish/play` | 业务信令 + Offer/Answer | SIP `REGISTER/MESSAGE/INVITE/ACK/BYE` | SOAP 服务调用，媒体播放通常转 RTSP |
+| 认证鉴权 | Basic/Digest/URL token | 推流密钥、URL token、业务鉴权 | 业务 token、DTLS、TURN 凭证 | SIP Digest | HTTP Digest、WS-Security |
+| 媒体参数描述/协商 | SDP | AMF metadata + sequence header | SDP Offer/Answer | SDP + XML 业务字段 | Profile/EncoderConfig/StreamUri，拉流后 RTSP SDP |
+| 媒体承载 | RTP/RTCP，UDP 或 TCP interleaved | RTMP chunk/message，常承载 FLV tag 语义 | SRTP/SRTCP | RTP/RTCP，常见 PS over RTP | 通常不直接承载媒体，交给 RTSP/RTP |
+| 质量反馈/控制 | RTCP | 主要依赖 TCP，协议级反馈弱 | RTCP/NACK/PLI/FIR/TWCC/带宽估计 | RTCP，工程中常弱化 | 取决于实际媒体协议 |
+| 设备管理/业务控制 | 弱，主要控制播放 | 弱，主要推拉流 | 弱，偏实时通信 | 强，目录、心跳、报警、云台、回放 | 强，发现、配置、PTZ、事件 |
+| 底层网络传输 | TCP/UDP | TCP | UDP/TCP/TLS/DTLS | UDP/TCP | HTTP/SOAP/UDP multicast，媒体多为 RTSP/RTP |
+
+按定位分组会更清楚：
+
+| 类型 | 协议/体系 | 说明 |
+|---|---|---|
+| 流媒体会话控制协议 | RTSP | 控制拉流播放，媒体多走 RTP |
+| 直播推拉流传输协议 | RTMP | 自己有连接、命令、chunk、媒体 message |
+| 低延迟实时通信协议栈 | WebRTC | ICE、DTLS、SRTP、RTCP 反馈等一整套 |
+| 安防国标联网体系 | GB28181 | SIP + SDP + RTP/PS + 国标业务 XML |
+| 安防设备管理体系 | ONVIF | 设备发现、能力查询、配置、PTZ，媒体多交给 RTSP |
+
+可以画成：
+
+```mermaid
+flowchart TD
+    A[媒体传输/协议体系] --> B[会话控制协议<br/>RTSP SIP/GB28181]
+    A --> C[直播传输协议<br/>RTMP]
+    A --> D[实时通信协议栈<br/>WebRTC]
+    A --> E[设备管理协议<br/>ONVIF]
+    A --> F[媒体承载协议<br/>RTP RTCP SRTP RTMP chunk]
+    A --> G[媒体描述格式<br/>SDP AMF metadata ONVIF Profile]
+
+    B --> H[建立/控制/结束会话]
+    C --> I[推流/拉流和媒体 message]
+    D --> J[低延迟音视频通信]
+    E --> K[发现/配置/PTZ/事件]
+    F --> L[承载真实媒体字节]
+    G --> M[说明编码和传输参数]
+```
+
+一句话总结：不要简单说这五个都是“媒体传输协议”。它们都服务媒体系统，但侧重点不同：RTSP 偏会话控制，RTMP 偏直播传输，WebRTC 是实时通信协议栈，GB28181 是安防联网体系，ONVIF 是安防设备管理体系。
+
+### 4.3 媒体参数描述层
 
 学习 RTSP、GB28181、ONVIF、RTMP 时，会反复遇到一个问题：对端怎么知道这一路流是什么编码、用什么端口、payload type 是多少、分辨率和采样率是多少、解码初始化参数在哪里。
 
