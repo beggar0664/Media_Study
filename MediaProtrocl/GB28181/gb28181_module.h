@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 typedef struct {
+    /* 国标设备/平台/媒体协商所需的最小配置。 */
     char local_id[64];
     char domain[64];
     char username[64];
@@ -27,6 +28,7 @@ typedef struct {
 } gb28181_config_t;
 
 typedef struct {
+    /* 解析 SIP 报文后的最小结果集，够学习和做 mock 验证。 */
     int is_response;
     int status_code;
     char reason[64];
@@ -47,6 +49,7 @@ typedef struct {
 } gb28181_sip_message_t;
 
 typedef struct {
+    /* Digest 鉴权挑战参数。 */
     char realm[128];
     char nonce[256];
     char qop[64];
@@ -56,17 +59,22 @@ typedef struct {
 
 typedef struct gb28181_context_s* gb28181_handle_t;
 
+/* 生命周期接口：创建、启动 RTP、停止、销毁。 */
 gb28181_handle_t gb28181_create(const gb28181_config_t *config);
 int gb28181_start(gb28181_handle_t handle);
 void gb28181_stop(gb28181_handle_t handle);
 void gb28181_destroy(gb28181_handle_t handle);
 
+/* SIP 信令文本构造。 */
 int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
+/* SIP MESSAGE：用于 Keepalive / Catalog 这类 XML 控制消息。 */
 int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+/* 学习用 XML 片段提取。 */
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size);
+/* SDP / PS / RTP 相关构造与发送。 */
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc);
 int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
                                int annexb_size,
@@ -76,6 +84,7 @@ int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
                                int out_buf_size);
 int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out);
 int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out);
+/* 根据 401 返回的 challenge 生成 Authorization。 */
 int gb28181_build_digest_authorization(const gb28181_config_t *config,
                                        const char *method,
                                        const char *uri,
@@ -85,7 +94,9 @@ int gb28181_build_digest_authorization(const gb28181_config_t *config,
 int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out);
 int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out);
 
+/* 直接发送一包 RTP payload。 */
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker);
+/* 按 max_payload_size 做简单分片发送。 */
 int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
                                         const void *payload,
                                         int payload_size,

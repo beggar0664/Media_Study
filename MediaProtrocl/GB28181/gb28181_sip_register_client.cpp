@@ -67,6 +67,7 @@ static int recv_sip_message(int sockfd, char *buf, int buf_size, int timeout_ms)
 
 static int build_invite_request(const gb28181_config_t *cfg, char *buf, int buf_size)
 {
+    /* INVITE 携带 SDP，告诉平台我要开哪一路媒体会话。 */
     char sdp[1024];
     char ssrc[16];
     int sdp_len;
@@ -99,6 +100,7 @@ static int build_invite_request(const gb28181_config_t *cfg, char *buf, int buf_
 
 static int build_ack_request(const gb28181_config_t *cfg, char *buf, int buf_size)
 {
+    /* ACK 确认 INVITE 事务，表示双方对会话参数已确认。 */
     return snprintf(buf, buf_size,
         "ACK sip:%s@%s SIP/2.0\r\n"
         "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-ack\r\n"
@@ -119,6 +121,7 @@ static int build_ack_request(const gb28181_config_t *cfg, char *buf, int buf_siz
 
 static int build_bye_request(const gb28181_config_t *cfg, char *buf, int buf_size)
 {
+    /* BYE 结束会话。 */
     return snprintf(buf, buf_size,
         "BYE sip:%s@%s SIP/2.0\r\n"
         "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-bye\r\n"
@@ -142,6 +145,7 @@ static void send_message_and_print_response(int sockfd,
                                             char *recv_buf,
                                             int recv_buf_size)
 {
+    /* MESSAGE 走同样的 SIP 收发逻辑，只是 body 内容换成 XML。 */
     int ret;
     printf("===== %s =====\n%s\n", title, request);
     send_sip_message(sockfd, remote_addr, request);
@@ -155,6 +159,7 @@ static void send_message_and_print_response(int sockfd,
 
 int main(void)
 {
+    /* 最小 SIP 客户端演示：REGISTER -> MESSAGE -> INVITE -> ACK -> BYE。 */
     gb28181_config_t cfg;
     gb28181_sip_message_t msg;
     char request[4096];
@@ -224,6 +229,7 @@ int main(void)
 #endif
 
     gb28181_build_register(&cfg, request, sizeof(request));
+    /* 第一次 REGISTER：没有 Authorization，故意触发 401。 */
     printf("===== First REGISTER =====\n%s\n", request);
     send_sip_message(sockfd, &remote_addr, request);
 
@@ -236,6 +242,7 @@ int main(void)
             printf("===== SIP RESPONSE =====\n%s\n", recv_buf);
             printf("status=%d reason=%s\n", msg.status_code, msg.reason);
             if (msg.status_code == 401 && msg.www_authenticate[0] != '\0') {
+                /* 根据 401 的 challenge 再构造带 Authorization 的第二次 REGISTER。 */
                 if (gb28181_parse_www_authenticate(msg.www_authenticate, &challenge) == 0) {
                     snprintf(uri, sizeof(uri), "sip:%s@%s", cfg.sip_server_ip, cfg.sip_server_ip);
                     if (gb28181_build_digest_authorization(&cfg, "REGISTER", uri, &challenge, auth_line, sizeof(auth_line)) > 0) {
@@ -265,10 +272,12 @@ int main(void)
                             printf("===== SECOND RESPONSE =====\n%s\n", recv_buf);
                             memset(&msg, 0, sizeof(msg));
                             if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && msg.status_code == 200) {
+                                /* 注册成功后，先发两个 MESSAGE，学保活和目录查询。 */
                                 gb28181_build_message_keepalive(&cfg, 3, request, sizeof(request));
                                 send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Keepalive", request, recv_buf, sizeof(recv_buf));
                                 gb28181_build_message_catalog(&cfg, 4, request, sizeof(request));
                                 send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Catalog", request, recv_buf, sizeof(recv_buf));
+                                /* 再发 INVITE，开始媒体会话。 */
                                 build_invite_request(&cfg, request, sizeof(request));
                                 printf("===== INVITE + SDP =====\n%s\n", request);
                                 send_sip_message(sockfd, &remote_addr, request);
@@ -277,9 +286,11 @@ int main(void)
                                     printf("===== INVITE RESPONSE =====\n%s\n", recv_buf);
                                     memset(&msg, 0, sizeof(msg));
                                     if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && msg.status_code == 200) {
+                                        /* 200 OK 后发 ACK，媒体会话正式建立。 */
                                         build_ack_request(&cfg, request, sizeof(request));
                                         printf("===== ACK =====\n%s\n", request);
                                         send_sip_message(sockfd, &remote_addr, request);
+                                        /* 结束会话。 */
                                         build_bye_request(&cfg, request, sizeof(request));
                                         printf("===== BYE =====\n%s\n", request);
                                         send_sip_message(sockfd, &remote_addr, request);

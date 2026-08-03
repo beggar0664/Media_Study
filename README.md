@@ -3,6 +3,7 @@
 核心横向总览：
 
 - [media_layer_commonality.md](media_layer_commonality.md)：容器层与媒体传输层的共性和个性
+- [current_code_learning_guide.md](current_code_learning_guide.md)：当前代码的运行、抓包和阅读路线
 
 这是一个媒体封装与传输协议的学习仓库，重点放在容器层、协议传输层和编解码层的拆解、字节级定位和代码对照。
 

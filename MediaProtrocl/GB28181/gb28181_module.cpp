@@ -27,6 +27,7 @@
 using namespace jrtplib;
 
 typedef struct gb28181_context_s {
+    /* 模块运行时上下文：保存配置、RTP 会话和发送状态。 */
     gb28181_config_t config;
     int started;
     unsigned short rtp_seq;
@@ -40,6 +41,7 @@ typedef struct gb28181_context_s {
 
 static void gb28181_init_default_config(gb28181_config_t *cfg)
 {
+    /* 给学习示例准备一组可直接跑通的默认值。 */
     memset(cfg, 0, sizeof(*cfg));
     cfg->sip_server_port = 5060;
     cfg->local_sip_port = 5060;
@@ -53,6 +55,7 @@ static void gb28181_init_default_config(gb28181_config_t *cfg)
 
 static const char *cfg_local_ip(const gb28181_config_t *cfg)
 {
+    /* local_ip 和 media_ip 兼容，优先使用明确设置的 local_ip。 */
     if (cfg->local_ip[0] != '\0') {
         return cfg->local_ip;
     }
@@ -61,11 +64,13 @@ static const char *cfg_local_ip(const gb28181_config_t *cfg)
 
 static int cfg_local_sip_port(const gb28181_config_t *cfg)
 {
+    /* SIP 本地端口，缺省回落到 5060。 */
     return cfg->local_sip_port > 0 ? cfg->local_sip_port : 5060;
 }
 
 static int cfg_local_rtp_port(const gb28181_config_t *cfg)
 {
+    /* RTP 本地端口，兼容 media_port 旧字段。 */
     if (cfg->local_rtp_port > 0) {
         return cfg->local_rtp_port;
     }
@@ -74,6 +79,7 @@ static int cfg_local_rtp_port(const gb28181_config_t *cfg)
 
 static const char *cfg_remote_rtp_ip(const gb28181_config_t *cfg)
 {
+    /* 远端 RTP 地址，默认用 SIP 服务器地址。 */
     if (cfg->remote_rtp_ip[0] != '\0') {
         return cfg->remote_rtp_ip;
     }
@@ -82,16 +88,19 @@ static const char *cfg_remote_rtp_ip(const gb28181_config_t *cfg)
 
 static int cfg_remote_rtp_port(const gb28181_config_t *cfg)
 {
+    /* 远端 RTP 端口，默认跟本地 RTP 端口一致，便于学习演示。 */
     return cfg->remote_rtp_port > 0 ? cfg->remote_rtp_port : cfg_local_rtp_port(cfg);
 }
 
 static unsigned int cfg_ssrc(const gb28181_config_t *cfg)
 {
+    /* SSRC 是 RTP 同步源标识。 */
     return cfg->ssrc != 0 ? cfg->ssrc : 0x12345678;
 }
 
 static void copy_config(gb28181_config_t *dst, const gb28181_config_t *src)
 {
+    /* 先填默认值，再覆盖用户传入值，最后补齐别名字段。 */
     gb28181_init_default_config(dst);
     if (!src) {
         return;
@@ -122,6 +131,7 @@ static void copy_config(gb28181_config_t *dst, const gb28181_config_t *src)
 
 gb28181_handle_t gb28181_create(const gb28181_config_t *config)
 {
+    /* 创建模块上下文，不启动 RTP，只准备配置和状态。 */
     gb28181_context_t *ctx = (gb28181_context_t *)calloc(1, sizeof(gb28181_context_t));
     if (!ctx) {
         return NULL;
@@ -135,6 +145,7 @@ gb28181_handle_t gb28181_create(const gb28181_config_t *config)
 
 int gb28181_start(gb28181_handle_t handle)
 {
+    /* 启动 RTP 会话：创建 jrtplib session、绑定端口、添加远端地址。 */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     if (!ctx || ctx->started) {
         return ctx ? 0 : -1;
@@ -201,6 +212,7 @@ int gb28181_start(gb28181_handle_t handle)
 
 void gb28181_stop(gb28181_handle_t handle)
 {
+    /* 释放 RTP 会话和平台相关网络资源。 */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     if (!ctx) {
         return;
@@ -231,6 +243,7 @@ void gb28181_destroy(gb28181_handle_t handle)
 
 int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_size)
 {
+    /* 生成第一次 REGISTER，请求还没有 Authorization。 */
     if (!config || !buf || buf_size <= 0) {
         return -1;
     }
@@ -255,6 +268,7 @@ int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_si
 
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc)
 {
+    /* 生成最小 SDP：告诉对端视频类型、端口、payload type、SSRC。 */
     if (!config || !buf || buf_size <= 0 || !ssrc) {
         return -1;
     }
@@ -279,6 +293,7 @@ int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, c
 
 int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size)
 {
+    /* INVITE 携带 SDP，用于发起媒体会话。 */
     char sdp[1024];
     char ssrc[16];
     int sdp_len;
@@ -315,6 +330,7 @@ int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size
 
 int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size)
 {
+    /* BYE 用于结束对话。 */
     if (!config || !buf || buf_size <= 0) {
         return -1;
     }
@@ -341,6 +357,7 @@ static int build_xml_message(const gb28181_config_t *config,
                              char *buf,
                              int buf_size)
 {
+    /* 学习用 MESSAGE 构造器：外层是 SIP，body 是 XML。 */
     char body[1024];
     int body_len;
 
@@ -400,16 +417,19 @@ static int build_xml_message(const gb28181_config_t *config,
 
 int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
 {
+    /* 保活通知。 */
     return build_xml_message(config, "Keepalive", cseq, cseq, buf, buf_size);
 }
 
 int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
 {
+    /* 目录查询。 */
     return build_xml_message(config, "Catalog", cseq, cseq, buf, buf_size);
 }
 
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size)
 {
+    /* 只做最小标签提取，便于 mock server 学习命令解析。 */
     char open_tag[64];
     char close_tag[64];
     const char *begin;
@@ -441,6 +461,7 @@ int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf
 
 static int ascii_case_equal_n(const char *a, const char *b, size_t n)
 {
+    /* 不区分大小写的前缀比较。 */
     size_t i;
     for (i = 0; i < n; ++i) {
         if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) {
@@ -452,6 +473,7 @@ static int ascii_case_equal_n(const char *a, const char *b, size_t n)
 
 static void copy_trimmed(char *dst, size_t dst_size, const char *begin, const char *end)
 {
+    /* 去掉首尾空白后拷贝，适合解析 SIP 头字段。 */
     size_t len;
     while (begin < end && isspace((unsigned char)*begin)) {
         begin++;
@@ -503,6 +525,7 @@ static void strip_quotes(char *s)
 
 static void md5_hex(const unsigned char *data, size_t len, char out_hex[33])
 {
+    /* Windows 下用 CryptoAPI 计算 MD5。 */
 #ifdef _WIN32
     HCRYPTPROV prov = 0;
     HCRYPTHASH hash = 0;
@@ -723,6 +746,7 @@ static void parse_digest_param(const char *value_begin, const char *value_end, c
 
 int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out)
 {
+    /* 把 SIP 文本拆成起始行、头字段和 body。 */
     const char *line_begin;
     const char *line_end;
     const char *body;
@@ -772,6 +796,7 @@ int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out)
 
 int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out)
 {
+    /* 从 401 的 WWW-Authenticate 中提取 Digest challenge。 */
     const char *p;
     const char *end;
 
@@ -807,6 +832,7 @@ int gb28181_build_digest_authorization(const gb28181_config_t *config,
                                        char *buf,
                                        int buf_size)
 {
+    /* 按 Digest 规则计算响应值，生成 Authorization 头。 */
     char ha1[33];
     char ha2[33];
     char response[33];
@@ -860,6 +886,7 @@ int gb28181_build_digest_authorization(const gb28181_config_t *config,
 
 int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out)
 {
+    /* 读取 jrtplib 当前实际绑定的 RTP 端口。 */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     RTPTransmissionInfo *info;
     int port;
@@ -889,6 +916,7 @@ int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out)
 
 int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out)
 {
+    /* 读取当前上下文使用的 SSRC。 */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     if (!ctx || !ssrc_out) {
         return -1;
@@ -899,6 +927,7 @@ int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out)
 
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker)
 {
+    /* 发送单个 RTP 包；timestamp_inc 是时间戳增量，不是绝对值。 */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     int status;
 
@@ -921,6 +950,7 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
                                         int max_payload_size,
                                         unsigned int timestamp_inc)
 {
+    /* 简单按字节切片：前面分片 marker=0，最后一片 marker=1。 */
     const unsigned char *data = (const unsigned char *)payload;
     int offset = 0;
     int total_sent = 0;

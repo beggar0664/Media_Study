@@ -52,12 +52,14 @@ static int socket_close(int sockfd)
 
 static void build_www_auth(char *buf, int buf_size)
 {
+    /* 用于 401 响应的最小 Digest challenge。 */
     snprintf(buf, buf_size,
         "WWW-Authenticate: Digest realm=\"3402000000\", nonce=\"1234567890abcdef\", algorithm=MD5, qop=auth\r\n");
 }
 
 static void build_play_sdp(char *buf, int buf_size)
 {
+    /* INVITE 返回的最小 SDP，用于说明媒体端口和编码。 */
     snprintf(buf, buf_size,
         "v=0\r\n"
         "o=34020000002000000001 0 0 IN IP4 127.0.0.1\r\n"
@@ -72,6 +74,7 @@ static void build_play_sdp(char *buf, int buf_size)
 
 int main(void)
 {
+    /* 最小 SIP mock 平台：处理 REGISTER / MESSAGE / INVITE / ACK / BYE。 */
     int sockfd;
     struct sockaddr_in addr;
     char recv_buf[8192];
@@ -126,6 +129,7 @@ int main(void)
         printf("===== RX from %s:%d =====\n%s\n", from_ip, ntohs(peer.sin_port), recv_buf);
         printf("method=%s cseq=%d auth=%s\n", msg.method, msg.cseq, msg.authorization[0] ? msg.authorization : "<none>");
 
+        /* 第一次 REGISTER 没有 Authorization，故意回 401 让客户端走鉴权。 */
         if (!registered && strcmp(msg.method, "REGISTER") == 0 && msg.authorization[0] == '\0') {
             char www_auth[256];
             build_www_auth(www_auth, sizeof(www_auth));
@@ -145,6 +149,7 @@ int main(void)
         }
 
         if (strcmp(msg.method, "REGISTER") == 0 && msg.authorization[0] != '\0') {
+            /* 第二次 REGISTER 带 Authorization，认为注册成功。 */
             registered = 1;
             snprintf(reply, sizeof(reply),
                 "SIP/2.0 200 OK\r\n"
@@ -161,6 +166,7 @@ int main(void)
         }
 
         if (registered && strcmp(msg.method, "MESSAGE") == 0) {
+            /* MESSAGE 是 SIP 信令，body 中一般放 XML 控制消息。 */
             char cmd_type[64];
             char sn[64];
             char device_id[64];
@@ -191,6 +197,7 @@ int main(void)
         }
 
         if (registered && strcmp(msg.method, "INVITE") == 0) {
+            /* INVITE 返回 SDP，说明平台愿意接受媒体会话。 */
             char sdp[1024];
             int sdp_len;
             build_play_sdp(sdp, sizeof(sdp));
@@ -214,12 +221,14 @@ int main(void)
         }
 
         if (invited && strcmp(msg.method, "ACK") == 0) {
+            /* ACK 到达后，认为会话正式建立。 */
             acked = 1;
             printf("===== ACK RECEIVED, media session established in mock =====\n");
             continue;
         }
 
         if ((invited || acked) && strcmp(msg.method, "BYE") == 0) {
+            /* BYE 结束会话并清理状态。 */
             snprintf(reply, sizeof(reply),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"
