@@ -1,5 +1,16 @@
 #include "gb28181_module.h"
 
+/*
+ * 最小 RTP / PS over RTP 学习示例。
+ *
+ * 对应文档：
+ * - ../gb28181_study.md：RTP、PS over RTP、RTP 分片章节
+ * - ../../current_code_learning_guide.md：Wireshark 过滤 udp.dstport == 30000 的抓包方法
+ *
+ * 这个程序单独演示媒体承载：裸 H.264 over RTP、PS over RTP、强制小包分片和 1200 字节分片。
+ * SIP/SDP 会话控制由 gb28181_sip_register_client.cpp / gb28181_sip_mock_server.cpp 单独演示。
+ */
+
 #ifdef _WIN32
 #include <windows.h>
 #else

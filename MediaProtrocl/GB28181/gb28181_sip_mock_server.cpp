@@ -1,5 +1,16 @@
 #include "gb28181_module.h"
 
+/*
+ * 最小 GB28181 SIP mock 平台。
+ *
+ * 对应文档：
+ * - ../gb28181_study.md：REGISTER Digest、MESSAGE、INVITE/SDP 的平台侧响应
+ * - ../../current_code_learning_guide.md：如何先启动 mock server 再运行 client
+ *
+ * 这个程序只用于学习信令闭环：收到 REGISTER/MESSAGE/INVITE/ACK/BYE 后返回最小响应。
+ * 它不是真实平台，也不接收 RTP 媒体流。
+ */
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>

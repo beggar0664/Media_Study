@@ -83,6 +83,26 @@ sequenceDiagram
     Platform-->>Device: 200 OK
 ```
 
+这张图是 GB28181 最小闭环的总览。它把三件事串起来：先注册，再发业务控制消息，再建媒体会话，最后结束会话。
+
+按顺序拆开看：
+
+| 阶段 | 含义 |
+|---|---|
+| `REGISTER` | 设备先向平台表明自己在线 |
+| `401 Unauthorized` | 平台要求设备做 Digest 鉴权 |
+| `REGISTER + Authorization` | 设备带鉴权信息重发注册 |
+| `MESSAGE Keepalive` | 设备上报保活，证明在线 |
+| `MESSAGE Catalog` | 设备或平台发起目录查询 |
+| `INVITE + SDP` | 设备发起媒体会话协商 |
+| `200 OK + SDP` | 平台同意会话并给出媒体参数 |
+| `ACK` | 设备确认会话建立 |
+| `RTP/PS media stream` | 真正的音视频开始走 RTP |
+| `BYE` | 设备结束会话 |
+| `200 OK` | 平台确认结束 |
+
+这张图的关键不是记住每个字，而是记住顺序：**先注册，再保活/查询，再协商媒体，再发 RTP，最后结束**。
+
 ## 3. SIP 是什么
 
 SIP 是 GB28181 的事务和会话控制语言。它负责“谁和谁说话、说什么、什么时候结束”，但不直接承载音视频字节。
@@ -144,6 +164,20 @@ sequenceDiagram
     Platform-->>Device: 200 OK
 ```
 
+这张图只讲 Digest 鉴权的最小闭环。它说明 `Authorization` 不是密码本身，而是设备根据平台给的 `WWW-Authenticate` challenge 计算出来的响应。
+
+逐步理解：
+
+| 步骤 | 含义 |
+|---|---|
+| `REGISTER without Authorization` | 第一次注册故意不带鉴权头，平台会拒绝 |
+| `401 Unauthorized + WWW-Authenticate` | 平台下发 `realm`、`nonce`、`qop` 等挑战参数 |
+| `HA1/HA2/response MD5` | 设备用用户名、密码、方法、URI 和 challenge 计算摘要 |
+| `REGISTER + Authorization` | 设备把计算结果放进 Authorization 头重发 |
+| `200 OK` | 平台验证通过，注册成功 |
+
+对应到代码，就是 `gb28181_parse_www_authenticate()` 先拆 challenge，再由 `gb28181_build_digest_authorization()` 拼出 `Authorization`。
+
 当前最小模块已经补了两块底座：
 
 - `gb28181_parse_www_authenticate()`：解析 `realm` / `nonce` / `qop` / `opaque` / `algorithm`
@@ -187,6 +221,8 @@ Catalog 查询的 body 示例：
 </Query>
 ```
 
+Catalog 响应还没做成完整列表链路，但学习时可以先知道它后面通常会回一段目录 XML，里面会包含通道列表、设备名称、在线状态、编码信息等字段。后续补齐时，这一节会扩展成“查询 + 响应”的完整闭环。
+
 外层 SIP 报文里重点看：
 
 | 字段 | 学习重点 |
@@ -219,6 +255,24 @@ sequenceDiagram
     Note right of Device: CmdType=Catalog<br/>DeviceID=...
     Platform-->>Device: 200 OK
 ```
+
+这张图讲的是 MESSAGE 控制消息，不是媒体流。它的重点在 XML body，而不是 SIP 头本身。
+
+理解时抓两层：
+
+| 层 | 看什么 |
+|---|---|
+| SIP 外层 | `Via`、`From`、`To`、`Call-ID`、`CSeq`、`Content-Type`、`Content-Length` |
+| XML 内层 | `<CmdType>`、`<SN>`、`<DeviceID>`、`<Status>` |
+
+两类 MESSAGE 含义不同：
+
+| MESSAGE 类型 | 作用 |
+|---|---|
+| Keepalive | 设备保活，上报在线状态 |
+| Catalog | 查询目录或通道列表 |
+
+在当前学习代码里，`gb28181_sip_register_client.cpp` 发这两个 MESSAGE，`gb28181_sip_mock_server.cpp` 负责把 `<CmdType>` 解析出来再回 `200 OK`。
 
 ## 4. SDP 是什么
 
@@ -269,6 +323,86 @@ sequenceDiagram
     Device->>Platform: BYE
     Platform-->>Device: 200 OK
 ```
+
+这张图表达的是“先用 SIP/SDP 谈好媒体参数，再用 RTP 传媒体”。不要把 `INVITE + SDP` 理解成已经开始传视频，它只是建会话和协商参数。
+
+可以拆成两条通道看：
+
+```text
+SIP 信令通道:
+Device SIP port <-> Platform SIP port
+负责 INVITE / 200 OK / ACK / BYE
+
+RTP 媒体通道:
+Device RTP sender -> Platform RTP receiver
+负责真正的音视频 RTP packet
+```
+
+更详细的时序图：
+
+```mermaid
+sequenceDiagram
+    participant DeviceSIP as Device SIP
+    participant PlatformSIP as Platform SIP
+    participant DeviceRTP as Device RTP Sender
+    participant PlatformRTP as Platform RTP Receiver
+
+    DeviceSIP->>PlatformSIP: INVITE + SDP
+    Note right of DeviceSIP: SDP: m=video 10000 RTP/AVP 96<br/>a=sendonly<br/>a=rtpmap:96 H264/90000<br/>a=ssrc:0305419896
+
+    PlatformSIP-->>DeviceSIP: 200 OK + SDP
+    Note left of PlatformSIP: SDP: m=video 30000 RTP/AVP 96<br/>a=recvonly<br/>a=rtpmap:96 H264/90000<br/>a=ssrc:0305419896
+
+    DeviceSIP->>PlatformSIP: ACK
+    DeviceRTP->>PlatformRTP: RTP packet #1
+    DeviceRTP->>PlatformRTP: RTP packet #2
+    DeviceRTP->>PlatformRTP: RTP packet #N
+    DeviceSIP->>PlatformSIP: BYE
+    PlatformSIP-->>DeviceSIP: 200 OK
+```
+
+这张图是 INVITE/SDP 会话建立的细化版，和上一张总览图是同一件事，只是拆得更明确：**SIP 负责谈参数，RTP 负责发媒体**。
+
+读图时把两条通道分开：
+
+| 通道 | 作用 |
+|---|---|
+| SIP 通道 | 传 `INVITE / 200 OK / ACK / BYE` 这类控制报文 |
+| RTP 通道 | 真正传视频或音频包 |
+
+再看 SDP 参数：
+
+| 字段 | 含义 |
+|---|---|
+| `m=video 10000 RTP/AVP 96` | 设备建议的 RTP 发送端口、payload type |
+| `a=sendonly` | 设备只发不收 |
+| `m=video 30000 RTP/AVP 96` | 平台建议的 RTP 接收端口、payload type |
+| `a=recvonly` | 平台只收不发 |
+| `a=rtpmap:96 H264/90000` | 双方都同意 PT 96 表示 H.264 |
+| `a=ssrc:0305419896` | RTP 同步源标识 |
+
+在当前代码里，`gb28181_sip_register_client.cpp` 负责这条 SIP 会话链，`gb28181_minimal_example.cpp` 负责演示后面的 RTP 媒体包。
+
+每一步的含义：
+
+| 步骤 | 含义 |
+|---|---|
+| `INVITE + SDP` | 设备发起媒体会话，并在 SDP 里说明自己准备怎么发送媒体 |
+| `200 OK + SDP` | 平台同意会话，并在 SDP 里说明自己准备在哪个地址、端口接收媒体 |
+| `ACK` | 设备确认收到 `200 OK`，SIP 建会话三步完成 |
+| `RTP packets` | 真正开始传音视频数据，已经不是 SIP 报文 |
+| `BYE` | 设备请求结束这次媒体会话 |
+| `200 OK` | 平台确认会话结束 |
+
+对应到当前学习代码：
+
+| 代码 | 学习内容 |
+|---|---|
+| `gb28181_sip_register_client.cpp` | 构造 `INVITE + SDP`、发送 `ACK`、发送 `BYE` |
+| `gb28181_sip_mock_server.cpp` | 收 `INVITE` 后返回 `200 OK + SDP`，收 `BYE` 后返回 `200 OK` |
+| `gb28181_minimal_example.cpp` | 单独演示 RTP packet、PS over RTP、RTP 分片 |
+
+当前示例里 SIP 会话控制和 RTP 媒体发送是分开演示的：`gb28181_sip_register_client.exe` 用来学 SIP/SDP 会话控制，`gb28181_minimal_example.exe` 用来学 RTP/PS over RTP 媒体承载。
 
 ### 4.1 SDP 和容器头是不是重叠
 
@@ -493,6 +627,20 @@ flowchart TD
     D -. 传输层 .-> D1[PT Seq Timestamp Marker SSRC]
 ```
 
+这张图是媒体封装链路的分层图。它想表达的是：真正的视频编码数据先进入容器层，再进入 RTP 传输层。
+
+各层职责：
+
+| 节点 | 职责 |
+|---|---|
+| `H.264/H.265 NALU` | 编解码层，表示具体帧和参数集 |
+| `PES` | 把编码数据包装成节目元素流 |
+| `PS` | 把 PES 再包装成节目流容器 |
+| `RTP payload` | 把容器内容装进网络传输载荷 |
+| `UDP/IP` | 真正把字节送到对端 |
+
+这张图也解释了为什么 GB28181 常见的是 `RTP -> PS -> PES -> NALU`，而不是直接把裸 H.264 帧扔给对端。
+
 所以下一步的学习重点是：
 
 - 看懂 PS pack header / PES header / PTS
@@ -533,6 +681,18 @@ sequenceDiagram
     Sender->>Receiver: RTP seq=N+2 timestamp=T marker=1 payload=PS last part
     Receiver->>Receiver: Reassemble payload by seq/timestamp
 ```
+
+这张图讲的是 RTP 分片。它的重点不在“拆了几包”，而在“这些包怎么被同一个接收端重新拼回去”。
+
+需要同时看三个字段：
+
+| 字段 | 作用 |
+|---|---|
+| `sequence number` | 标记包顺序，帮助重组和发现丢包 |
+| `timestamp` | 表示这些包属于同一个媒体时刻 |
+| `marker` | 标记这个媒体单元的最后一包 |
+
+在当前示例里，`max_payload=24` 是故意把 PS 数据切得很碎，方便你在 Wireshark 里观察同一组 RTP 包的 seq、timestamp 和 marker 变化。`max_payload=1200` 则更接近工程里常见的单包大小。
 
 当前 `gb28181_minimal_example.exe` 也会用 `max_payload=24` 强制演示一次 PS over RTP 分片，便于抓包观察同一个 PS pack 被拆进多个 RTP 包后的 `sequence number / marker / timestamp` 变化。
 

@@ -1,6 +1,15 @@
 #ifndef GB28181_MODULE_H
 #define GB28181_MODULE_H
 
+/*
+ * GB28181 学习模块公共接口。
+ *
+ * 这套代码是协议学习用最小实现，不是完整 GB28181 SDK。
+ * 建议先看文档再读代码：
+ * - ../gb28181_study.md：GB28181 信令、SDP、RTP/PS 的分层和时序图
+ * - ../../current_code_learning_guide.md：当前代码的运行、抓包和阅读顺序
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -65,17 +74,21 @@ int gb28181_start(gb28181_handle_t handle);
 void gb28181_stop(gb28181_handle_t handle);
 void gb28181_destroy(gb28181_handle_t handle);
 
-/* SIP 信令文本构造。 */
+/* SIP 信令文本构造。详见 ../gb28181_study.md 的 REGISTER / INVITE / BYE 章节。 */
+/* 构造第一次 REGISTER：不带 Authorization，用于触发平台返回 401 challenge。 */
 int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_size);
+/* 构造 INVITE + SDP：用于发起媒体会话协商，不负责发送 RTP。 */
 int gb28181_build_invite(const gb28181_config_t *config, char *buf, int buf_size);
+/* 构造 BYE：用于结束 SIP 媒体会话。 */
 int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
 /* SIP MESSAGE：用于 Keepalive / Catalog 这类 XML 控制消息。 */
 int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 /* 学习用 XML 片段提取。 */
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size);
-/* SDP / PS / RTP 相关构造与发送。 */
+/* SDP / PS / RTP 相关构造与发送。详见 ../gb28181_study.md 的 SDP、RTP、PS over RTP 章节。 */
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc);
+/* 把 Annex-B H.264 数据封成最小 PS pack：H.264 NALU -> PES -> PS。 */
 int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
                                int annexb_size,
                                unsigned int pts_90khz,

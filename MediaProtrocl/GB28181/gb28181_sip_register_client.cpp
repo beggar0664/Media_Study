@@ -1,5 +1,17 @@
 #include "gb28181_module.h"
 
+/*
+ * 最小 GB28181 SIP 客户端学习示例。
+ *
+ * 对应文档：
+ * - ../gb28181_study.md：REGISTER Digest、MESSAGE、INVITE/SDP 时序图
+ * - ../../current_code_learning_guide.md：运行 mock server/client 和 Wireshark 抓包方法
+ *
+ * 当前流程：
+ * REGISTER(无 Authorization) -> 401 -> REGISTER + Authorization -> 200 OK
+ * -> MESSAGE Keepalive -> MESSAGE Catalog -> INVITE + SDP -> ACK -> BYE
+ */
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
