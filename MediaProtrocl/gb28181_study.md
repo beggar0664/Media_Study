@@ -308,6 +308,28 @@ Catalog 这条链路现在可以这样理解：
 | `DeviceInfo` | 查询设备基本信息，例如名称、厂商、型号、固件版本 |
 | `DeviceStatus` | 查询设备在线状态、编码状态、录像状态等 |
 
+从请求格式看，它们和 Catalog 很像，都是 `MESSAGE + XML`，只是 `CmdType` 不同：
+
+```xml
+<?xml version="1.0" encoding="GB2312"?>
+<Query>
+<CmdType>DeviceInfo</CmdType>
+<SN>6</SN>
+<DeviceID>34020000001320000001</DeviceID>
+</Query>
+```
+
+```xml
+<?xml version="1.0" encoding="GB2312"?>
+<Query>
+<CmdType>DeviceStatus</CmdType>
+<SN>8</SN>
+<DeviceID>34020000001320000001</DeviceID>
+</Query>
+```
+
+这就是 `gb28181_build_message_device_info_query()` 和 `gb28181_build_message_device_status_query()` 这两个函数真正要教你的东西：同一套 SIP MESSAGE 外壳，换一个 XML 命令，就变成另一类设备查询。
+
 它们的最小验证方式和 Catalog 一样：
 
 ```text
@@ -334,6 +356,8 @@ Catalog 这条链路现在可以这样理解：
 | `Online` | 在线状态 |
 | `Encode` | 编码状态 |
 | `Record` | 录像状态 |
+
+在当前 mock 里，平台返回的是固定响应，便于学习请求-响应配对。你在 Wireshark 里可以直接按 `CSeq` 和 `CmdType` 对照：先看查询 MESSAGE，再看平台回的 Response MESSAGE，最后确认设备回的 `200 OK` 没有被误当成新的请求。
 
 当前这两类消息先做最小链路验证，后面可以继续扩展成更接近真实平台的字段集合。
 
