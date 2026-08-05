@@ -8,6 +8,7 @@
  * - ../../current_code_learning_guide.md：Wireshark 过滤 udp.dstport == 30000 的抓包方法
  *
  * 这个程序单独演示媒体承载：裸 H.264 over RTP、PS over RTP、强制小包分片和 1200 字节分片。
+ * 运行时重点看 RTP 头字段、payload 起始字节、以及分片时 seq / timestamp / marker 的变化。
  * SIP/SDP 会话控制由 gb28181_sip_register_client.cpp / gb28181_sip_mock_server.cpp 单独演示。
  */
 
@@ -89,12 +90,14 @@ int main(void)
     printf("===== BYE =====\n%s\n", bye_msg);
     if (demo_ps_len > 0) {
         int i;
+        /* 这段输出是给 WinHex / 十六进制比对用的，先看 PS pack header 再看 PES。 */
         printf("===== PS PACK (H.264) len=%d =====\n", demo_ps_len);
         for (i = 0; i < demo_ps_len; ++i) {
             printf("%02X%c", demo_ps_pack[i], ((i + 1) % 16 == 0 || i + 1 == demo_ps_len) ? '\n' : ' ');
         }
     }
     if (normal_ps_len > 0) {
+        /* 这段更接近工程分包尺寸，便于观察 1200 字节左右的常见发送方式。 */
         printf("===== NORMAL PS PACK len=%d, normal max_payload=1200 =====\n", normal_ps_len);
     }
 
@@ -117,6 +120,7 @@ int main(void)
         if (gb28181_get_ssrc(handle, &ssrc) == 0) {
             printf("SSRC: %010u (0x%08X)\n", ssrc, ssrc);
         }
+        /* 先发一组最小访问单元，便于确认裸 H.264 over RTP 的基础行为。 */
         printf("sending one H.264 access unit: SPS -> PPS -> IDR\n");
         ret = gb28181_send_rtp_packet(handle, demo_h264_sps, sizeof(demo_h264_sps), 0, 0);
         printf("[3/4] send SPS ret=%d len=%u timestamp_inc=%u marker=0\n", ret, (unsigned)sizeof(demo_h264_sps), 0u);
@@ -129,16 +133,19 @@ int main(void)
             printf("[3/4] send IDR ret=%d len=%u timestamp_inc=%u marker=1\n", ret, (unsigned)sizeof(demo_h264_idr), 9000u);
         }
         if (ret >= 0 && demo_ps_len > 0) {
+            /* 同一个 PS pack 直接作为 RTP payload 发出去，适合先看整体字节布局。 */
             printf("sending one PS-over-RTP packet: PS pack -> PES -> H.264 IDR\n");
             ret = gb28181_send_rtp_packet(handle, demo_ps_pack, demo_ps_len, 9000, 1);
             printf("[3/4] send PS ret=%d len=%u timestamp_inc=%u marker=1\n", ret, (unsigned)demo_ps_len, 9000u);
         }
         if (ret >= 0 && demo_ps_len > 0) {
+            /* 故意把 payload 压得很小，逼出多个 RTP 包，方便看 seq/timestamp/marker。 */
             printf("sending fragmented PS-over-RTP packets: max_payload=24\n");
             ret = gb28181_send_rtp_payload_fragmented(handle, demo_ps_pack, demo_ps_len, 24, 9000);
             printf("[3/4] send fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)demo_ps_len, 9000u);
         }
         if (ret >= 0 && normal_ps_len > 0) {
+            /* 这个分片尺寸更接近实际工程，通常会让单包接近 MTU 上限但不超过。 */
             printf("sending normal PS-over-RTP packets: max_payload=1200\n");
             ret = gb28181_send_rtp_payload_fragmented(handle, normal_ps_pack, normal_ps_len, 1200, 9000);
             printf("[3/4] send normal fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)normal_ps_len, 9000u);
@@ -148,6 +155,7 @@ int main(void)
 #else
         sleep(5);
 #endif
+        /* 重复发同一 IDR，便于在抓包里对比连续包的时间戳和序号。 */
         printf("repeat IDR packets for packet inspection\n");
         for (i = 0; i < 4; ++i) {
             ret = gb28181_send_rtp_packet(handle, demo_h264_idr, sizeof(demo_h264_idr), 9000, 1);

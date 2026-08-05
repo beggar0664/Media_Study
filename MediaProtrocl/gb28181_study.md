@@ -801,6 +801,16 @@ sequenceDiagram
 
 当前 `gb28181_minimal_example.exe` 也会用 `max_payload=24` 强制演示一次 PS over RTP 分片，便于抓包观察同一个 PS pack 被拆进多个 RTP 包后的 `sequence number / marker / timestamp` 变化。
 
+运行这个示例时，建议按下面顺序看输出：
+
+1. 先看 `PS PACK (H.264)` 十六进制输出，确认 `00 00 01 BA`、`00 00 01 E0`、`00 00 00 01 67/68/65`。
+2. 再看 `sending one H.264 access unit`，确认裸 H.264 RTP 里发送的是 SPS / PPS / IDR。
+3. 再看 `sending one PS-over-RTP packet`，确认整个 PS pack 被当成一个 RTP payload。
+4. 再看 `sending fragmented PS-over-RTP packets: max_payload=24`，确认同一个 PS 被拆成多个 RTP 包。
+5. 最后看 `sending normal PS-over-RTP packets: max_payload=1200`，确认更接近工程尺寸的发送方式。
+
+抓包时可以直接把程序输出和 Wireshark 的 `udp.port == 10000` 对照起来：输出负责告诉你“这一轮发的是什么”，Wireshark 负责告诉你“实际上包里长什么样”。
+
 示例里还保留一个更接近工程参数的发送路径：
 
 ```text
