@@ -380,10 +380,11 @@ static int build_xml_message(const gb28181_config_t *config,
         body_len = snprintf(body, sizeof(body),
             "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
             "<Query>\r\n"
-            "<CmdType>Catalog</CmdType>\r\n"
+            "<CmdType>%s</CmdType>\r\n"
             "<SN>%d</SN>\r\n"
             "<DeviceID>%s</DeviceID>\r\n"
             "</Query>\r\n",
+            cmd_type,
             sn,
             config->local_id);
     }
@@ -427,6 +428,18 @@ int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char
     return build_xml_message(config, "Catalog", cseq, cseq, buf, buf_size);
 }
 
+int gb28181_build_message_device_info_query(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    /* 设备信息查询。 */
+    return build_xml_message(config, "DeviceInfo", cseq, cseq, buf, buf_size);
+}
+
+int gb28181_build_message_device_status_query(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    /* 设备状态查询。 */
+    return build_xml_message(config, "DeviceStatus", cseq, cseq, buf, buf_size);
+}
+
 int gb28181_build_message_catalog_response(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
 {
     char body[2048];
@@ -461,6 +474,107 @@ int gb28181_build_message_catalog_response(const gb28181_config_t *config, int c
         "<Status>ON</Status>\r\n"
         "</Item>\r\n"
         "</DeviceList>\r\n"
+        "</Response>\r\n",
+        cseq,
+        config->local_id);
+
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=mock\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->sip_server_ip, config->domain,
+        config->username, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->sip_server_ip, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len,
+        body);
+}
+
+int gb28181_build_message_device_info(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !buf || buf_size <= 0) {
+        return -1;
+    }
+
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Response>\r\n"
+        "<CmdType>DeviceInfo</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<DeviceName>Mock IPC</DeviceName>\r\n"
+        "<Manufacturer>MockVendor</Manufacturer>\r\n"
+        "<Model>IPC-MOCK-01</Model>\r\n"
+        "<Firmware>1.0.0</Firmware>\r\n"
+        "<Result>OK</Result>\r\n"
+        "</Response>\r\n",
+        cseq,
+        config->local_id);
+
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=mock\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->sip_server_ip, config->domain,
+        config->username, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->sip_server_ip, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len,
+        body);
+}
+
+int gb28181_build_message_device_status(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !buf || buf_size <= 0) {
+        return -1;
+    }
+
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Response>\r\n"
+        "<CmdType>DeviceStatus</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<Online>ONLINE</Online>\r\n"
+        "<Status>OK</Status>\r\n"
+        "<Encode>H264</Encode>\r\n"
+        "<Record>ON</Record>\r\n"
         "</Response>\r\n",
         cseq,
         config->local_id);

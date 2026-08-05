@@ -299,6 +299,65 @@ Catalog 这条链路现在可以这样理解：
 
 目前 mock 版本返回的是固定的一条目录项，后续可以把它扩展成真正的设备树或通道树。
 
+### 3.4 DeviceInfo 与 DeviceStatus
+
+在 GB28181 里，除了目录查询，常见的两个查询消息还有 `DeviceInfo` 和 `DeviceStatus`。它们和 Catalog 一样，都是通过 SIP `MESSAGE` 承载 XML body。区别只是业务语义不同：
+
+| 消息 | 含义 |
+|---|---|
+| `DeviceInfo` | 查询设备基本信息，例如名称、厂商、型号、固件版本 |
+| `DeviceStatus` | 查询设备在线状态、编码状态、录像状态等 |
+
+它们的最小验证方式和 Catalog 一样：
+
+```text
+设备发 MESSAGE DeviceInfo Query
+平台先回 SIP 200 OK
+平台再发 DeviceInfo Response MESSAGE
+
+设备发 MESSAGE DeviceStatus Query
+平台先回 SIP 200 OK
+平台再发 DeviceStatus Response MESSAGE
+```
+
+最小响应里一般会看这些字段：
+
+| 字段 | 作用 |
+|---|---|
+| `CmdType` | 分别是 `DeviceInfo` / `DeviceStatus` |
+| `SN` | 用来和查询请求对号 |
+| `DeviceID` | 当前设备编号 |
+| `DeviceName` | 设备名称 |
+| `Manufacturer` | 厂商 |
+| `Model` | 型号 |
+| `Firmware` | 固件版本 |
+| `Online` | 在线状态 |
+| `Encode` | 编码状态 |
+| `Record` | 录像状态 |
+
+当前这两类消息先做最小链路验证，后面可以继续扩展成更接近真实平台的字段集合。
+
+本次最小代码已经验证的 MESSAGE 查询闭环是：
+
+```text
+MESSAGE Catalog Query
+平台返回 SIP 200 OK
+平台再发送 MESSAGE Catalog Response
+设备返回 SIP 200 OK
+
+MESSAGE DeviceInfo Query
+平台返回 SIP 200 OK
+平台再发送 MESSAGE DeviceInfo Response
+设备返回 SIP 200 OK
+
+MESSAGE DeviceStatus Query
+平台返回 SIP 200 OK
+平台再发送 MESSAGE DeviceStatus Response
+设备返回 SIP 200 OK
+```
+
+这里有一个容易踩坑的点：平台收到设备对响应 MESSAGE 返回的 `SIP/2.0 200 OK` 时，不能再把它当成新的请求处理。mock server 现在会识别 `msg.is_response` 并直接忽略这类响应报文，否则后续 DeviceInfo、DeviceStatus、INVITE 的接收队列会被错误的 `501 Not Implemented` 或旧 MESSAGE 污染。
+
 ## 4. SDP 是什么
 
 SDP 是 SIP body 里的媒体描述文本。它不传媒体数据，只告诉对端“媒体要怎么传”。

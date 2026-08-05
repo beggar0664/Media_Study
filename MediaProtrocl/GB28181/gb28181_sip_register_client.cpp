@@ -9,7 +9,8 @@
  *
  * 当前流程：
  * REGISTER(无 Authorization) -> 401 -> REGISTER + Authorization -> 200 OK
- * -> MESSAGE Keepalive -> MESSAGE Catalog -> INVITE + SDP -> ACK -> BYE
+ * -> MESSAGE Keepalive -> MESSAGE Catalog -> MESSAGE DeviceInfo -> MESSAGE DeviceStatus
+ * -> INVITE + SDP -> ACK -> BYE
  */
 
 #ifdef _WIN32
@@ -169,29 +170,46 @@ static void send_message_and_print_response(int sockfd,
     }
 }
 
-static void send_catalog_and_print_responses(int sockfd,
-                                             const struct sockaddr_in *remote_addr,
-                                             const char *request,
-                                             char *recv_buf,
-                                             int recv_buf_size)
+static void send_query_and_print_responses(int sockfd,
+                                           const struct sockaddr_in *remote_addr,
+                                           const char *title,
+                                           const char *request,
+                                           char *recv_buf,
+                                           int recv_buf_size)
 {
     int ret;
-    printf("===== MESSAGE Catalog =====\n%s\n", request);
+    printf("===== %s =====\n%s\n", title, request);
     send_sip_message(sockfd, remote_addr, request);
 
     ret = recv_sip_message(sockfd, recv_buf, recv_buf_size, 3000);
     if (ret > 0) {
-        printf("===== MESSAGE Catalog RESPONSE #1 =====\n%s\n", recv_buf);
+        printf("===== %s RESPONSE #1 =====\n%s\n", title, recv_buf);
     } else {
-        printf("No MESSAGE Catalog response #1 received\n");
+        printf("No %s response #1 received\n", title);
         return;
     }
 
     ret = recv_sip_message(sockfd, recv_buf, recv_buf_size, 3000);
     if (ret > 0) {
-        printf("===== MESSAGE Catalog RESPONSE #2 =====\n%s\n", recv_buf);
+        gb28181_sip_message_t msg;
+        printf("===== %s RESPONSE #2 =====\n%s\n", title, recv_buf);
+        memset(&msg, 0, sizeof(msg));
+        if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && strcmp(msg.method, "MESSAGE") == 0) {
+            char ok[2048];
+            snprintf(ok, sizeof(ok),
+                "SIP/2.0 200 OK\r\n"
+                "Via: %s\r\n"
+                "From: %s\r\n"
+                "To: %s\r\n"
+                "Call-ID: %s\r\n"
+                "CSeq: %d MESSAGE\r\n"
+                "Content-Length: 0\r\n\r\n",
+                msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
+            printf("===== %s RESPONSE #2 ACK =====\n%s\n", title, ok);
+            send_sip_message(sockfd, remote_addr, ok);
+        }
     } else {
-        printf("No MESSAGE Catalog response #2 received\n");
+        printf("No %s response #2 received\n", title);
     }
 }
 
@@ -314,7 +332,11 @@ int main(void)
                                 gb28181_build_message_keepalive(&cfg, 3, request, sizeof(request));
                                 send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Keepalive", request, recv_buf, sizeof(recv_buf));
                                 gb28181_build_message_catalog(&cfg, 4, request, sizeof(request));
-                                send_catalog_and_print_responses(sockfd, &remote_addr, request, recv_buf, sizeof(recv_buf));
+                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE Catalog", request, recv_buf, sizeof(recv_buf));
+                                gb28181_build_message_device_info_query(&cfg, 6, request, sizeof(request));
+                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceInfo", request, recv_buf, sizeof(recv_buf));
+                                gb28181_build_message_device_status_query(&cfg, 8, request, sizeof(request));
+                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceStatus", request, recv_buf, sizeof(recv_buf));
                                 /* 再发 INVITE，开始媒体会话。 */
                                 build_invite_request(&cfg, request, sizeof(request));
                                 printf("===== INVITE + SDP =====\n%s\n", request);

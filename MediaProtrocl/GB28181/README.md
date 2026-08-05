@@ -11,7 +11,7 @@ Main study guide:
 - `REGISTER` text generation
 - `INVITE + SDP` text generation
 - `BYE` text generation
-- `MESSAGE` Keepalive and Catalog XML generation
+- `MESSAGE` Keepalive, Catalog, DeviceInfo and DeviceStatus XML generation
 - Basic SIP response parsing
 - Basic Digest challenge parsing and Authorization building
 - RTP sending through `jrtplib`
@@ -36,7 +36,7 @@ cmake --build build
 
 ## Notes
 
-This module is for study. It does not yet implement a full SIP state machine, Catalog response list parsing, DeviceInfo/DeviceStatus XML, or full H.264/H.265 RTP packetization.
+This module is for study. It does not yet implement a full SIP state machine, full Catalog response list parsing, or full H.264/H.265 RTP packetization.
 
 ## Mock server usage
 
@@ -62,6 +62,16 @@ REGISTER + Authorization
 MESSAGE Keepalive
 200 OK
 MESSAGE Catalog
+200 OK
+Catalog Response MESSAGE
+200 OK
+MESSAGE DeviceInfo
+200 OK
+DeviceInfo Response MESSAGE
+200 OK
+MESSAGE DeviceStatus
+200 OK
+DeviceStatus Response MESSAGE
 200 OK
 INVITE + SDP
 200 OK + SDP

@@ -85,6 +85,10 @@ int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
 int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 int gb28181_build_message_catalog_response(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+int gb28181_build_message_device_info_query(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+int gb28181_build_message_device_status_query(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+int gb28181_build_message_device_info(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+int gb28181_build_message_device_status(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 /* 学习用 XML 片段提取。 */
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size);
 /* SDP / PS / RTP 相关构造与发送。详见 ../gb28181_study.md 的 SDP、RTP、PS over RTP 章节。 */

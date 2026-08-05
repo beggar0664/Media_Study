@@ -97,6 +97,34 @@ static void build_catalog_response_message(char *buf, int buf_size, int cseq)
     gb28181_build_message_catalog_response(&cfg, cseq, buf, buf_size);
 }
 
+static void build_device_info_response_message(char *buf, int buf_size, int cseq)
+{
+    gb28181_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000002000000001");
+    snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
+    snprintf(cfg.username, sizeof(cfg.username), "%s", "34020000002000000001");
+    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "127.0.0.1");
+    cfg.local_sip_port = 5060;
+    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
+    snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
+    gb28181_build_message_device_info(&cfg, cseq, buf, buf_size);
+}
+
+static void build_device_status_response_message(char *buf, int buf_size, int cseq)
+{
+    gb28181_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000002000000001");
+    snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
+    snprintf(cfg.username, sizeof(cfg.username), "%s", "34020000002000000001");
+    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "127.0.0.1");
+    cfg.local_sip_port = 5060;
+    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
+    snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
+    gb28181_build_message_device_status(&cfg, cseq, buf, buf_size);
+}
+
 int main(void)
 {
     /* 最小 SIP mock 平台：处理 REGISTER / MESSAGE / INVITE / ACK / BYE。 */
@@ -152,6 +180,14 @@ int main(void)
 
         inet_ntop(AF_INET, &peer.sin_addr, from_ip, sizeof(from_ip));
         printf("===== RX from %s:%d =====\n%s\n", from_ip, ntohs(peer.sin_port), recv_buf);
+
+        if (msg.is_response) {
+            printf("SIP response status=%d reason=%s, ignored by mock server\n",
+                   msg.status_code,
+                   msg.reason[0] ? msg.reason : "<none>");
+            continue;
+        }
+
         printf("method=%s cseq=%d auth=%s\n", msg.method, msg.cseq, msg.authorization[0] ? msg.authorization : "<none>");
 
         /* 第一次 REGISTER 没有 Authorization，故意回 401 让客户端走鉴权。 */
@@ -224,6 +260,16 @@ int main(void)
                 build_catalog_response_message(catalog_msg, sizeof(catalog_msg), msg.cseq + 1);
                 printf("===== TX CATALOG MESSAGE =====\n%s\n", catalog_msg);
                 send_reply(sockfd, &peer, catalog_msg);
+            } else if (strcmp(cmd_type, "DeviceInfo") == 0) {
+                char info_msg[2048];
+                build_device_info_response_message(info_msg, sizeof(info_msg), msg.cseq + 1);
+                printf("===== TX DEVICEINFO MESSAGE =====\n%s\n", info_msg);
+                send_reply(sockfd, &peer, info_msg);
+            } else if (strcmp(cmd_type, "DeviceStatus") == 0) {
+                char status_msg[2048];
+                build_device_status_response_message(status_msg, sizeof(status_msg), msg.cseq + 1);
+                printf("===== TX DEVICESTATUS MESSAGE =====\n%s\n", status_msg);
+                send_reply(sockfd, &peer, status_msg);
             }
             continue;
         }
