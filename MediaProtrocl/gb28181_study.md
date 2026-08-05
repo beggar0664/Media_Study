@@ -49,6 +49,8 @@ MESSAGE
   -> Keepalive / Catalog / DeviceInfo / DeviceStatus
   -> MESSAGE 本身是 SIP 方法，具体命令放在 XML body 里
 
+其中 `Keepalive` 的意思就是“设备还在线”，`Catalog` 的意思就是“查目录/查通道”。
+
 INVITE + SDP
   -> 协商媒体地址、端口、payload type、SSRC、编码名
   -> 平台 200 OK
@@ -192,6 +194,8 @@ sequenceDiagram
 ### 3.2 MESSAGE、Keepalive 和 Catalog
 
 GB28181 里很多设备控制和查询不是靠新的传输连接完成，而是走 SIP `MESSAGE`。`MESSAGE` 这层仍然是 SIP 报文，头部继续使用 `Via / From / To / Call-ID / CSeq / Content-Type / Content-Length`，真正的业务命令放在 XML body 里。
+
+在当前学习代码里，`Keepalive` 就是在线保活消息，`Catalog` 就是目录查询消息。前者回答“设备还活着吗”，后者回答“设备有哪些通道/资源”。
 
 当前最小模块补了两个学习用构造函数：
 
