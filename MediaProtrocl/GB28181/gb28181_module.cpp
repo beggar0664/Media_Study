@@ -831,6 +831,14 @@ int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
         return -3;
     }
 
+    /*
+     * 当前最小实现只封一个视频 PES，再外包一层 PS pack。
+     * 结构可以按 WinHex 直接去找：
+     *   00 00 01 BA  -> PS pack header
+     *   00 00 01 E0  -> 视频 PES start code
+     *   80 80 05     -> PES header + PTS only
+     *   00 00 00 01  -> Annex-B NALU 起始码
+     */
     pes_header_data_len = 5; /* PTS only */
     pes_len = 3 + 1 + 2 + 3 + pes_header_data_len + es_payload_len;
     payload_len = 4 + 3 + 1 + 2 + 3 + pes_header_data_len + es_payload_len;
@@ -841,6 +849,7 @@ int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
     p = out_buf;
     write_u32_be(p, 0x000001BA);
     p += 4;
+    /* pack_start_code 后面是固定形态的 pack header，便于播放器识别这是 PS。 */
     *p++ = 0x44;
     *p++ = 0x00;
     *p++ = 0x04;
@@ -852,14 +861,18 @@ int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
 
     write_u32_be(p, 0x000001E0);
     p += 4;
+    /* PES_packet_length 不包含 start code 和 length 字段本身，所以这里减 6。 */
     write_u16_be(p, (unsigned short)(pes_len - 6));
     p += 2;
+    /* PES 标志：'10' + PTS only。 */
     *p++ = 0x80;
     *p++ = 0x80;
     *p++ = (unsigned char)pes_header_data_len;
+    /* PTS 用 90kHz 时钟写入，便于和 RTP timestamp 对齐。 */
     build_pts(p, 0x02, pts_90khz);
     p += 5;
 
+    /* Annex-B 码流直接跟在 PES payload 后，保留原始 NALU 起始码。 */
     memcpy(p, annexb_data + es_start, (size_t)es_payload_len);
     p += es_payload_len;
 

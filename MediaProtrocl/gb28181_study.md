@@ -731,6 +731,27 @@ flowchart TD
 - 看懂 RTP payload 里装的是 PS 还是裸 H.264
 - 用 WinHex 比对 `00 00 01 BA`、`00 00 01 E0` 和 PES 里的 NALU 起始码
 
+如果你用 WinHex 看 `gb28181_build_ps_pack_h264()` 的输出，可以按下面的顺序找：
+
+```text
+00 00 01 BA
+  -> PS pack header 起始
+
+00 00 01 E0
+  -> 视频 PES 起始
+
+80 80 05
+  -> PES 标志和 PES header 长度，表示这里只写 PTS
+
+PTS 5 字节
+  -> 90kHz 时间戳
+
+00 00 00 01 67 / 68 / 65
+  -> 原始 H.264 Annex-B NALU
+```
+
+这几段字节的作用是分层定位：先找到容器头，再找到 PES 头，最后才进入真正的视频 NALU。这样你在排查灰屏、跳帧、GOP 异常时，能快速判断问题出在 PS、PES、RTP 还是编解码层。
+
 当前 `gb28181_minimal_example.exe` 会连续演示两种 RTP payload：
 
 ```text
