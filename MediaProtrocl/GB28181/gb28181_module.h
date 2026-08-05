@@ -38,32 +38,32 @@ typedef struct {
 
 typedef struct {
     /* 解析 SIP 报文后的最小结果集，够学习和做 mock 验证。 */
-    int is_response;
-    int status_code;
-    char reason[64];
-    char method[32];
-    char request_uri[128];
-    char via[256];
-    char from[256];
-    char to[256];
-    char call_id[128];
-    int cseq;
-    char cseq_method[32];
-    char contact[256];
-    char content_type[64];
-    char www_authenticate[512];
-    char authorization[512];
-    int content_length;
-    const char *body;
+    int is_response;            /* 非 0 表示这是 SIP 响应报文，例如 SIP/2.0 200 OK。 */
+    int status_code;            /* 响应状态码，仅在 is_response != 0 时有意义。 */
+    char reason[64];            /* 响应原因短语，例如 OK / Unauthorized / Not Implemented。 */
+    char method[32];            /* 请求方法，例如 REGISTER / MESSAGE / INVITE / ACK / BYE。 */
+    char request_uri[128];      /* 请求行里的 Request-URI，例如 sip:340200...@3402000000。 */
+    char via[256];              /* Via 头，记录请求经过的 SIP 节点和传输地址；响应通常沿原路径返回。 */
+    char from[256];             /* From 头，请求发起方的 SIP 标识。 */
+    char to[256];               /* To 头，请求接收方的 SIP 标识。 */
+    char call_id[128];          /* Call-ID，标识同一条 SIP 会话或事务链。 */
+    int cseq;                   /* CSeq 数字部分，用于请求排序和响应匹配。 */
+    char cseq_method[32];       /* CSeq 后面的方法名，例如 REGISTER / MESSAGE。 */
+    char contact[256];          /* Contact 头，对端后续请求应联系的地址。 */
+    char content_type[64];      /* Content-Type 头，说明 body 的媒体格式或 XML 格式。 */
+    char www_authenticate[512]; /* 401 响应里的 WWW-Authenticate 头原文。 */
+    char authorization[512];    /* 请求里的 Authorization 头原文。 */
+    int content_length;         /* SIP body 的字节长度。 */
+    const char *body;           /* 指向 SIP body 起始位置的指针。 */
 } gb28181_sip_message_t;
 
 typedef struct {
     /* Digest 鉴权挑战参数。 */
-    char realm[128];
-    char nonce[256];
-    char qop[64];
-    char opaque[128];
-    char algorithm[32];
+    char realm[128];      /* 保护域，通常对应 SIP 域或平台域名。 */
+    char nonce[256];      /* 服务器下发的一次性随机数。 */
+    char qop[64];         /* Quality of Protection，例如 auth。 */
+    char opaque[128];     /* 可选透传字段，服务器可能要求回填。 */
+    char algorithm[32];   /* 摘要算法，例如 MD5。 */
 } gb28181_digest_challenge_t;
 
 typedef struct gb28181_context_s* gb28181_handle_t;
@@ -100,9 +100,11 @@ int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
                                unsigned int dts_90khz,
                                unsigned char *out_buf,
                                int out_buf_size);
+/* 解析整条 SIP 报文，提取起始行、常用头字段和 body 指针。 */
 int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out);
+/* 从 401 的 WWW-Authenticate 头里提取 Digest challenge 参数。 */
 int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out);
-/* 根据 401 返回的 challenge 生成 Authorization。 */
+/* 根据 challenge 生成 Digest Authorization 头。 */
 int gb28181_build_digest_authorization(const gb28181_config_t *config,
                                        const char *method,
                                        const char *uri,

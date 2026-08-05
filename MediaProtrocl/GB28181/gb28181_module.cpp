@@ -357,7 +357,7 @@ static int build_xml_message(const gb28181_config_t *config,
                              char *buf,
                              int buf_size)
 {
-    /* 学习用 MESSAGE 构造器：外层是 SIP，body 是 XML。 */
+    /* 生成 MESSAGE 的 XML body，并把它封装成完整 SIP 报文。 */
     char body[1024];
     int body_len;
 
@@ -418,7 +418,7 @@ static int build_xml_message(const gb28181_config_t *config,
 
 int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
 {
-    /* 保活通知。 */
+    /* Keepalive 查询/通知。 */
     return build_xml_message(config, "Keepalive", cseq, cseq, buf, buf_size);
 }
 
@@ -445,7 +445,7 @@ int gb28181_build_message_catalog_response(const gb28181_config_t *config, int c
     char body[2048];
     int body_len;
 
-    /* 学习用最小目录响应：先回一个固定的通道列表，后续可扩展成真实目录。 */
+    /* 最小目录响应：返回固定的通道列表，便于学习查询/响应闭环。 */
     if (!config || !buf || buf_size <= 0) {
         return -1;
     }
@@ -514,6 +514,7 @@ int gb28181_build_message_device_info(const gb28181_config_t *config, int cseq, 
         return -1;
     }
 
+    /* 最小设备信息响应：字段固定，便于学习响应格式。 */
     body_len = snprintf(body, sizeof(body),
         "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
         "<Response>\r\n"
@@ -565,6 +566,7 @@ int gb28181_build_message_device_status(const gb28181_config_t *config, int cseq
         return -1;
     }
 
+    /* 最小设备状态响应：字段固定，便于学习响应格式。 */
     body_len = snprintf(body, sizeof(body),
         "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
         "<Response>\r\n"
@@ -925,7 +927,7 @@ static void parse_digest_param(const char *value_begin, const char *value_end, c
 
 int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out)
 {
-    /* 把 SIP 文本拆成起始行、头字段和 body。 */
+    /* 把 SIP 文本拆成起始行、头字段和 body 指针。 */
     const char *line_begin;
     const char *line_end;
     const char *body;
@@ -975,7 +977,7 @@ int gb28181_parse_sip_message(const char *msg, gb28181_sip_message_t *out)
 
 int gb28181_parse_www_authenticate(const char *header_value, gb28181_digest_challenge_t *out)
 {
-    /* 从 401 的 WWW-Authenticate 中提取 Digest challenge。 */
+    /* 从 401 的 WWW-Authenticate 中提取 Digest challenge 参数。 */
     const char *p;
     const char *end;
 
