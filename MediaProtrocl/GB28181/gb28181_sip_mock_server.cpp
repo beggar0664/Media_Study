@@ -83,6 +83,20 @@ static void build_play_sdp(char *buf, int buf_size)
         "a=ssrc:0305419896\r\n");
 }
 
+static void build_catalog_response_message(char *buf, int buf_size, int cseq)
+{
+    gb28181_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000002000000001");
+    snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
+    snprintf(cfg.username, sizeof(cfg.username), "%s", "34020000002000000001");
+    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "127.0.0.1");
+    cfg.local_sip_port = 5060;
+    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
+    snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
+    gb28181_build_message_catalog_response(&cfg, cseq, buf, buf_size);
+}
+
 int main(void)
 {
     /* 最小 SIP mock 平台：处理 REGISTER / MESSAGE / INVITE / ACK / BYE。 */
@@ -204,6 +218,13 @@ int main(void)
                 msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
             printf("===== TX MESSAGE 200 =====\n%s\n", reply);
             send_reply(sockfd, &peer, reply);
+
+            if (strcmp(cmd_type, "Catalog") == 0) {
+                char catalog_msg[4096];
+                build_catalog_response_message(catalog_msg, sizeof(catalog_msg), msg.cseq + 1);
+                printf("===== TX CATALOG MESSAGE =====\n%s\n", catalog_msg);
+                send_reply(sockfd, &peer, catalog_msg);
+            }
             continue;
         }
 

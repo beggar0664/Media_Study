@@ -169,6 +169,32 @@ static void send_message_and_print_response(int sockfd,
     }
 }
 
+static void send_catalog_and_print_responses(int sockfd,
+                                             const struct sockaddr_in *remote_addr,
+                                             const char *request,
+                                             char *recv_buf,
+                                             int recv_buf_size)
+{
+    int ret;
+    printf("===== MESSAGE Catalog =====\n%s\n", request);
+    send_sip_message(sockfd, remote_addr, request);
+
+    ret = recv_sip_message(sockfd, recv_buf, recv_buf_size, 3000);
+    if (ret > 0) {
+        printf("===== MESSAGE Catalog RESPONSE #1 =====\n%s\n", recv_buf);
+    } else {
+        printf("No MESSAGE Catalog response #1 received\n");
+        return;
+    }
+
+    ret = recv_sip_message(sockfd, recv_buf, recv_buf_size, 3000);
+    if (ret > 0) {
+        printf("===== MESSAGE Catalog RESPONSE #2 =====\n%s\n", recv_buf);
+    } else {
+        printf("No MESSAGE Catalog response #2 received\n");
+    }
+}
+
 int main(void)
 {
     /* 最小 SIP 客户端演示：REGISTER -> MESSAGE -> INVITE -> ACK -> BYE。 */
@@ -288,7 +314,7 @@ int main(void)
                                 gb28181_build_message_keepalive(&cfg, 3, request, sizeof(request));
                                 send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Keepalive", request, recv_buf, sizeof(recv_buf));
                                 gb28181_build_message_catalog(&cfg, 4, request, sizeof(request));
-                                send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Catalog", request, recv_buf, sizeof(recv_buf));
+                                send_catalog_and_print_responses(sockfd, &remote_addr, request, recv_buf, sizeof(recv_buf));
                                 /* 再发 INVITE，开始媒体会话。 */
                                 build_invite_request(&cfg, request, sizeof(request));
                                 printf("===== INVITE + SDP =====\n%s\n", request);

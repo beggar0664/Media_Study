@@ -221,7 +221,7 @@ Catalog 查询的 body 示例：
 </Query>
 ```
 
-Catalog 响应还没做成完整列表链路，但学习时可以先知道它后面通常会回一段目录 XML，里面会包含通道列表、设备名称、在线状态、编码信息等字段。后续补齐时，这一节会扩展成“查询 + 响应”的完整闭环。
+Catalog 响应链路现在已经补成最小闭环了：平台会先回一个 `200 OK`，再主动发一条目录响应 MESSAGE。这个目录响应里会包含最小的 `DeviceList`、`DeviceItem`、在线状态等字段，便于学习“查询 + 响应”这条链路。
 
 外层 SIP 报文里重点看：
 
@@ -273,6 +273,31 @@ sequenceDiagram
 | Catalog | 查询目录或通道列表 |
 
 在当前学习代码里，`gb28181_sip_register_client.cpp` 发这两个 MESSAGE，`gb28181_sip_mock_server.cpp` 负责把 `<CmdType>` 解析出来再回 `200 OK`。
+
+### 3.3 Catalog 查询与响应
+
+Catalog 这条链路现在可以这样理解：
+
+```text
+设备发 MESSAGE Catalog Query
+平台先回 SIP 200 OK
+平台再发一条 Catalog Response MESSAGE
+设备收到后，才真正拿到目录列表
+```
+
+最小响应里一般会看到这些字段：
+
+| 字段 | 作用 |
+|---|---|
+| `CmdType` | 仍然是 `Catalog`，表示目录相关消息 |
+| `SN` | 用来和查询请求对上号 |
+| `DeviceID` | 当前目录消息对应的设备或平台编号 |
+| `SumNum` | 目录里总共有多少条记录 |
+| `DeviceList` | 通道列表容器 |
+| `Item` | 单个通道或设备条目 |
+| `Status` | 在线/离线状态 |
+
+目前 mock 版本返回的是固定的一条目录项，后续可以把它扩展成真正的设备树或通道树。
 
 ## 4. SDP 是什么
 

@@ -427,6 +427,71 @@ int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char
     return build_xml_message(config, "Catalog", cseq, cseq, buf, buf_size);
 }
 
+int gb28181_build_message_catalog_response(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+{
+    char body[2048];
+    int body_len;
+
+    /* 学习用最小目录响应：先回一个固定的通道列表，后续可扩展成真实目录。 */
+    if (!config || !buf || buf_size <= 0) {
+        return -1;
+    }
+
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Response>\r\n"
+        "<CmdType>Catalog</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<SumNum>1</SumNum>\r\n"
+        "<DeviceList Num=\"1\">\r\n"
+        "<Item>\r\n"
+        "<DeviceID>34020000001320000001</DeviceID>\r\n"
+        "<Name>Camera-01</Name>\r\n"
+        "<Manufacturer>MockVendor</Manufacturer>\r\n"
+        "<Model>IPC-MOCK-01</Model>\r\n"
+        "<Owner>3402000000</Owner>\r\n"
+        "<CivilCode>340200</CivilCode>\r\n"
+        "<Address>Mock Address</Address>\r\n"
+        "<Parental>0</Parental>\r\n"
+        "<ParentID>34020000002000000001</ParentID>\r\n"
+        "<SafetyWay>0</SafetyWay>\r\n"
+        "<RegisterWay>1</RegisterWay>\r\n"
+        "<Secrecy>0</Secrecy>\r\n"
+        "<Status>ON</Status>\r\n"
+        "</Item>\r\n"
+        "</DeviceList>\r\n"
+        "</Response>\r\n",
+        cseq,
+        config->local_id);
+
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=mock\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->sip_server_ip, config->domain,
+        config->username, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->sip_server_ip, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len,
+        body);
+}
+
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size)
 {
     /* 只做最小标签提取，便于 mock server 学习命令解析。 */
