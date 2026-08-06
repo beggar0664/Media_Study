@@ -337,7 +337,7 @@ int main(void)
                                 send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceInfo", request, recv_buf, sizeof(recv_buf));
                                 gb28181_build_message_device_status_query(&cfg, 8, request, sizeof(request));
                                 send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceStatus", request, recv_buf, sizeof(recv_buf));
-                                /* 再发 INVITE，开始媒体会话。 */
+                                /* 再发 INVITE，开始媒体会话协商；真正发媒体前还要等 200 OK + SDP。 */
                                 build_invite_request(&cfg, request, sizeof(request));
                                 printf("===== INVITE + SDP =====\n%s\n", request);
                                 send_sip_message(sockfd, &remote_addr, request);
@@ -346,11 +346,11 @@ int main(void)
                                     printf("===== INVITE RESPONSE =====\n%s\n", recv_buf);
                                     memset(&msg, 0, sizeof(msg));
                                     if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && msg.status_code == 200) {
-                                        /* 200 OK 后发 ACK，媒体会话正式建立。 */
+                                        /* 200 OK 后发 ACK，这一步表示双方都接受了 SDP 参数，媒体会话正式建立。 */
                                         build_ack_request(&cfg, request, sizeof(request));
                                         printf("===== ACK =====\n%s\n", request);
                                         send_sip_message(sockfd, &remote_addr, request);
-                                        /* 结束会话。 */
+                                        /* ACK 之后才进入真正的媒体阶段；这里为了演示，马上用 BYE 结束会话。 */
                                         build_bye_request(&cfg, request, sizeof(request));
                                         printf("===== BYE =====\n%s\n", request);
                                         send_sip_message(sockfd, &remote_addr, request);

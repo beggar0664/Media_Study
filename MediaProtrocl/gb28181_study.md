@@ -197,6 +197,8 @@ GB28181 里很多设备控制和查询不是靠新的传输连接完成，而是
 
 在当前学习代码里，`Keepalive` 就是在线保活消息，`Catalog` 就是目录查询消息。前者回答“设备还活着吗”，后者回答“设备有哪些通道/资源”。
 
+`gb28181_sip_register_client.cpp` 的 `main()` 前半段就是在学这一步：先让设备在线，再做基本查询，确认控制面能跑通。
+
 当前最小模块补了两个学习用构造函数：
 
 - `gb28181_build_message_keepalive()`：设备保活通知。
@@ -494,6 +496,8 @@ sequenceDiagram
 | `a=ssrc:0305419896` | RTP 同步源标识 |
 
 在当前代码里，`gb28181_sip_register_client.cpp` 负责这条 SIP 会话链，`gb28181_minimal_example.cpp` 负责演示后面的 RTP 媒体包。
+
+`gb28181_sip_register_client.cpp` 的 `main()` 后半段从这里开始：`INVITE + SDP` 谈参数，`ACK` 确认会话，`BYE` 结束会话。
 
 每一步的含义：
 
