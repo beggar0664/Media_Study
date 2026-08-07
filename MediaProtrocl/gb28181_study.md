@@ -282,6 +282,12 @@ sequenceDiagram
 
 ### 3.3 Catalog 查询与响应
 
+Catalog 是 GB28181 里最常见的查询之一，作用是“查目录/查通道”。你可以把它理解成平台在问设备：
+
+```text
+你下面有哪些通道、哪些资源、哪些设备项可以被播放或管理？
+```
+
 Catalog 这条链路现在可以这样理解：
 
 ```text
@@ -290,6 +296,32 @@ Catalog 这条链路现在可以这样理解：
 平台再发一条 Catalog Response MESSAGE
 设备收到后，才真正拿到目录列表
 ```
+
+Catalog 的查询请求和前面的 `Keepalive` 很像，外层仍然是 SIP `MESSAGE`，真正的业务命令放在 XML body 里。不同点在于：
+
+- `Keepalive` 用 `<Notify>`，表示设备状态上报
+- `Catalog` 用 `<Query>`，表示设备主动向平台查询目录
+
+Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()`，它会构造类似下面的 XML：
+
+```xml
+<?xml version="1.0" encoding="GB2312"?>
+<Query>
+<CmdType>Catalog</CmdType>
+<SN>4</SN>
+<DeviceID>34020000001320000001</DeviceID>
+</Query>
+```
+
+这里最重要的字段是：
+
+| 字段 | 作用 |
+|---|---|
+| `CmdType=Catalog` | 表示这是目录查询 |
+| `SN` | 查询序号，便于和响应配对 |
+| `DeviceID` | 发起查询的设备编号 |
+
+平台收到后先回一个 `200 OK`，然后再发一条 `Catalog Response MESSAGE`。这条响应里一般会带目录列表、在线状态、通道编号、通道名称等信息。学习阶段可以先把它理解成“平台把设备树/通道树回给你”。
 
 最小响应里一般会看到这些字段：
 
@@ -300,6 +332,13 @@ Catalog 这条链路现在可以这样理解：
 | `DeviceID` | 当前目录消息对应的设备或平台编号 |
 | `SumNum` | 目录里总共有多少条记录 |
 | `DeviceList` | 通道列表容器 |
+
+如果你在 Wireshark 里看 Catalog，重点是两层：
+
+1. SIP 头里的 `CSeq`、`Call-ID`、`Content-Type`、`Content-Length`
+2. XML body 里的 `CmdType`、`SN`、`DeviceID`、`DeviceList`
+
+也就是说，Catalog 既是一次查询，也是一次“目录结构返回”的学习样本。你后面看 `DeviceInfo` / `DeviceStatus` 时，可以把它们当成同一类 MESSAGE 查询的不同业务命令。
 | `Item` | 单个通道或设备条目 |
 | `Status` | 在线/离线状态 |
 
