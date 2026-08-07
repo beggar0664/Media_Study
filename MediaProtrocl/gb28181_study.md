@@ -472,6 +472,25 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 | `Encode` | 编码状态 |
 | `Record` | 录像状态 |
 
+`DeviceInfo` 响应可以理解成“这个设备是谁、什么型号、什么固件”：
+
+| 字段 | 作用 |
+|---|---|
+| `DeviceName` | 设备显示名 |
+| `Manufacturer` | 厂商 |
+| `Model` | 型号 |
+| `Firmware` | 固件版本 |
+| `Result` | 请求结果，通常为 `OK` |
+
+`DeviceStatus` 响应可以理解成“这个设备现在怎么样”：
+
+| 字段 | 作用 |
+|---|---|
+| `Online` | 是否在线 |
+| `Status` | 状态概览，常见为 `OK` |
+| `Encode` | 编码状态，例如 H264 |
+| `Record` | 录像状态 |
+
 在当前 mock 里，平台返回的是固定响应，便于学习请求-响应配对。你在 Wireshark 里可以直接按 `CSeq` 和 `CmdType` 对照：先看查询 MESSAGE，再看平台回的 Response MESSAGE，最后确认设备回的 `200 OK` 没有被误当成新的请求。
 
 当前这两类消息先做最小链路验证，后面可以继续扩展成更接近真实平台的字段集合。
