@@ -323,6 +323,56 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 
 平台收到后先回一个 `200 OK`，然后再发一条 `Catalog Response MESSAGE`。这条响应里一般会带目录列表、在线状态、通道编号、通道名称等信息。学习阶段可以先把它理解成“平台把设备树/通道树回给你”。
 
+一个最小的 Catalog 响应 body 可以长成这样：
+
+```xml
+<?xml version="1.0" encoding="GB2312"?>
+<Response>
+<CmdType>Catalog</CmdType>
+<SN>4</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<SumNum>1</SumNum>
+<DeviceList Num="1">
+<Item>
+<DeviceID>34020000001320000001</DeviceID>
+<Name>Camera-01</Name>
+<Manufacturer>MockVendor</Manufacturer>
+<Model>IPC-MOCK-01</Model>
+<Owner>3402000000</Owner>
+<CivilCode>340200</CivilCode>
+<Address>Mock Address</Address>
+<Parental>0</Parental>
+<ParentID>34020000002000000001</ParentID>
+<SafetyWay>0</SafetyWay>
+<RegisterWay>1</RegisterWay>
+<Secrecy>0</Secrecy>
+<Status>ON</Status>
+</Item>
+</DeviceList>
+</Response>
+```
+
+这里可以这样读：
+
+| 字段 | 作用 |
+|---|---|
+| `CmdType=Catalog` | 表示这是目录响应 |
+| `SN` | 和查询请求里的 `SN` 对应 |
+| `DeviceID` | 目录响应所属设备或平台编号 |
+| `SumNum` | 目录总条数 |
+| `DeviceList Num="1"` | 当前响应里包含 1 条目录项 |
+| `Item` | 一条具体的设备/通道记录 |
+| `Name` | 通道名称 |
+| `Manufacturer` | 厂商 |
+| `Model` | 型号 |
+| `Owner` | 所属级联或平台编号 |
+| `CivilCode` | 行政区划码 |
+| `ParentID` | 父级节点编号 |
+| `RegisterWay` | 注册方式 |
+| `Status` | 在线状态，`ON` 表示在线 |
+
+当前 mock 代码返回的是一条固定目录项，目的不是模拟完整设备树，而是让你先把“目录查询 -> 目录响应 -> 解析字段”这条链路跑通。真正工程里，这一层通常会扩展成多级树、多条通道和级联设备列表。
+
 最小响应里一般会看到这些字段：
 
 | 字段 | 作用 |
@@ -332,6 +382,8 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 | `DeviceID` | 当前目录消息对应的设备或平台编号 |
 | `SumNum` | 目录里总共有多少条记录 |
 | `DeviceList` | 通道列表容器 |
+| `Item` | 单个通道或设备条目 |
+| `Status` | 在线/离线状态 |
 
 如果你在 Wireshark 里看 Catalog，重点是两层：
 

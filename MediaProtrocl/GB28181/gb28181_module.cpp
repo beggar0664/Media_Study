@@ -459,6 +459,7 @@ int gb28181_build_message_catalog_response(const gb28181_config_t *config, int c
         "<SumNum>1</SumNum>\r\n"
         "<DeviceList Num=\"1\">\r\n"
         "<Item>\r\n"
+        "<!-- 最小目录条目：固定一条通道记录，便于学习 Response 结构。 -->\r\n"
         "<DeviceID>34020000001320000001</DeviceID>\r\n"
         "<Name>Camera-01</Name>\r\n"
         "<Manufacturer>MockVendor</Manufacturer>\r\n"
