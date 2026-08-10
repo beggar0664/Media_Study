@@ -623,6 +623,34 @@ sequenceDiagram
 | `a=rtpmap:96 H264/90000` | 双方都同意 PT 96 表示 H.264 |
 | `a=ssrc:0305419896` | RTP 同步源标识 |
 
+这几个字段要和后面的 RTP 包对应起来看：
+
+| SDP 字段 | 对应 RTP/媒体层含义 |
+|---|---|
+| `m=video` | 这路媒体是视频 |
+| `10000` / `30000` | RTP 端口，不是 SIP 端口 |
+| `RTP/AVP` | 使用 RTP Audio/Video Profile |
+| `96` | 动态 payload type，后续 RTP 头里的 PT 要等于 96 |
+| `H264/90000` | PT 96 对应 H.264，RTP timestamp 使用 90kHz 时钟 |
+| `sendonly` | 当前端只发送媒体 |
+| `recvonly` | 当前端只接收媒体 |
+| `ssrc` | 后续 RTP 包里的 SSRC 应该和这里一致 |
+
+所以 SDP 不是媒体数据，而是给后面的 RTP 包立规则。抓包时可以这样对照：
+
+```text
+SDP: a=rtpmap:96 H264/90000
+RTP: Payload type = 96, Timestamp 按 90000 Hz 增长
+
+SDP: a=ssrc:0305419896
+RTP: SSRC = 0305419896
+
+SDP: m=video 30000 RTP/AVP 96
+UDP: 目的端口是 30000，RTP payload type 是 96
+```
+
+如果 SDP 和 RTP 对不上，播放器或平台就可能收到了包但无法按正确格式解释。例如 SDP 写 `H264/90000`，但 RTP payload 实际装的是 PS，或者 RTP 头里的 payload type 不是 96，都会造成解析异常。
+
 在当前代码里，`gb28181_sip_register_client.cpp` 负责这条 SIP 会话链，`gb28181_minimal_example.cpp` 负责演示后面的 RTP 媒体包。
 
 `gb28181_sip_register_client.cpp` 的 `main()` 后半段从这里开始：`INVITE + SDP` 谈参数，`ACK` 确认会话，`BYE` 结束会话。

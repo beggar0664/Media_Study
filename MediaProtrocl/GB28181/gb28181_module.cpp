@@ -268,7 +268,7 @@ int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_si
 
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc)
 {
-    /* 生成最小 SDP：告诉对端视频类型、端口、payload type、SSRC。 */
+    /* 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。 */
     if (!config || !buf || buf_size <= 0 || !ssrc) {
         return -1;
     }
