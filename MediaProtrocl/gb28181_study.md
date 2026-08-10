@@ -807,6 +807,49 @@ gb28181_send_rtp_packet()
 
 这里的 `timestamp_inc` 是“发完当前包后，时间戳增加多少”，不是绝对 PTS。
 
+### 8.1 `gb28181_build_sdp()` 在代码里到底做了什么
+`gb28181_build_sdp()` 生成的是一段字符串，不是媒体数据。它的任务是把“后面 RTP 怎么发”这件事，提前告诉对端。
+
+代码里这几行最关键：
+
+```c
+"m=video %d RTP/AVP %d\r\n"
+"a=sendonly\r\n"
+"a=rtpmap:%d H264/90000\r\n"
+"a=ssrc:%s\r\n"
+```
+
+逐项理解：
+
+| 代码参数 | 作用 |
+|---|---|
+| `m=video` | 说明这条媒体线是视频，不是音频 |
+| `%d` 端口 | 双方协商 RTP 端口，代码里默认用本地 RTP 端口 |
+| `RTP/AVP` | 说明这是 RTP 承载的音视频会话 |
+| `%d` payload type | 动态负载类型，例如 96 |
+| `a=sendonly` | 设备端只发不收 |
+| `a=rtpmap:%d H264/90000` | 说明 PT 96 对应 H.264，时钟频率是 90000 |
+| `a=ssrc:%s` | 说明这条 RTP 流的同步源标识 |
+
+这和后面抓到的 RTP 头是一一对应的：
+
+| SDP 字段 | RTP/UDP 里看什么 |
+|---|---|
+| `m=video 10000 RTP/AVP 96` | UDP 目的端口 10000，RTP payload type 96 |
+| `a=rtpmap:96 H264/90000` | RTP 的时间戳按 90000 Hz 语义解释 |
+| `a=ssrc:0305419896` | RTP 头里的 SSRC 应该一致 |
+| `a=sendonly` | 设备侧发送 RTP，平台侧接收 |
+
+所以 `INVITE + SDP` 不是在发视频，而是在谈视频会话参数；真正的视频数据还是后面的 RTP 包。
+
+### 8.2 为什么要先看 SDP，再看 RTP
+如果只看 RTP 包头，不先看 SDP，很多字段的语义是不完整的。
+- `PT=96` 只有配合 `a=rtpmap:96 H264/90000` 才知道它是 H.264。
+- `timestamp` 只有知道 `90000` 这个时钟语义，才知道怎么换算播放时间。
+- `SSRC` 只有和 SDP 对上，才知道是不是同一条会话流。
+
+这也是为什么在这套学习代码里，`gb28181_sip_register_client.cpp` 负责把 `INVITE + SDP` 发出去，`gb28181_minimal_example.cpp` 负责把 RTP 包真正打出来。
+
 ## 9. 当前最小模块还没做完什么
 
 现在的模块适合学习，不是完整国标设备端。还缺这些能力：
