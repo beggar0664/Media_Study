@@ -467,6 +467,8 @@ media demo: send PS over RTP ret=69 marker=1 timestamp_inc=9000
 
 这里的媒体包还是演示数据，不是摄像头真实采集数据。它的学习意义是把链路连完整：`Catalog 选通道 -> INVITE/SDP 建会 -> ACK 确认 -> RTP/PS 发媒体 -> BYE 结束`。
 
+与此同时，mock server 现在也会监听 `udp/30000`，收到 RTP 后会打印最小头部摘要：`version / pt / marker / seq / timestamp / ssrc / payload head`。这样你能直接把发送端和接收端对照起来，不必只依赖 Wireshark。
+
 ### 3.4 DeviceInfo 与 DeviceStatus
 
 在 GB28181 里，除了目录查询，常见的两个查询消息还有 `DeviceInfo` 和 `DeviceStatus`。它们和 Catalog 一样，都是通过 SIP `MESSAGE` 承载 XML body。区别只是业务语义不同：

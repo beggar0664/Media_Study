@@ -8,7 +8,7 @@
  * - ../../current_code_learning_guide.md：如何先启动 mock server 再运行 client
  *
  * 这个程序只用于学习信令闭环：收到 REGISTER/MESSAGE/INVITE/ACK/BYE 后返回最小响应。
- * 它不是真实平台，也不接收 RTP 媒体流。
+ * 同时监听 udp/30000，打印最小 RTP 头和 payload 起始字节，便于把信令和媒体对上。
  */
 
 #ifdef _WIN32
@@ -23,6 +23,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 static int init_winsock(void)
@@ -59,6 +60,75 @@ static int socket_close(int sockfd)
 #else
     return close(sockfd);
 #endif
+}
+
+static int bind_udp_socket(int port)
+{
+    int sockfd;
+    struct sockaddr_in addr;
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((u_short)port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind");
+        socket_close(sockfd);
+        return -1;
+    }
+    return sockfd;
+}
+
+static void print_rtp_packet_summary(const unsigned char *data, int size)
+{
+    unsigned int version;
+    unsigned int marker;
+    unsigned int payload_type;
+    unsigned int seq;
+    uint32_t timestamp;
+    uint32_t ssrc;
+    int payload_offset = 12;
+    int payload_size;
+    int i;
+
+    if (!data || size < 12) {
+        printf("===== RTP RX invalid packet len=%d =====\n", size);
+        return;
+    }
+
+    version = (unsigned int)((data[0] >> 6) & 0x03);
+    marker = (unsigned int)((data[1] >> 7) & 0x01);
+    payload_type = (unsigned int)(data[1] & 0x7F);
+    seq = (unsigned int)((data[2] << 8) | data[3]);
+    timestamp = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 8) | data[7];
+    ssrc = ((uint32_t)data[8] << 24) | ((uint32_t)data[9] << 16) | ((uint32_t)data[10] << 8) | data[11];
+    payload_size = size - payload_offset;
+
+    printf("===== RTP RX udp/30000 =====\n");
+    printf("version=%u pt=%u marker=%u seq=%u timestamp=%u ssrc=0x%08X payload_len=%d\n",
+           version, payload_type, marker, seq, timestamp, ssrc, payload_size);
+    printf("payload head:");
+    for (i = 0; i < payload_size && i < 16; ++i) {
+        printf(" %02X", data[payload_offset + i]);
+    }
+    printf("\n");
+    if (payload_size >= 4 && data[payload_offset] == 0x00 && data[payload_offset + 1] == 0x00 &&
+        data[payload_offset + 2] == 0x01 && data[payload_offset + 3] == 0xBA) {
+        printf("payload type guess: PS pack header 00 00 01 BA\n");
+    } else if (payload_size > 0 && (data[payload_offset] & 0x1F) == 5) {
+        printf("payload type guess: raw H.264 IDR NALU\n");
+    } else if (payload_size >= 2 && (data[payload_offset] & 0x1F) == 28) {
+        printf("payload type guess: H.264 FU-A\n");
+    } else {
+        printf("payload type guess: unknown/demo payload\n");
+    }
 }
 
 static void build_www_auth(char *buf, int buf_size)
@@ -129,11 +199,14 @@ int main(void)
 {
     /* 最小 SIP mock 平台：处理 REGISTER / MESSAGE / INVITE / ACK / BYE。 */
     int sockfd;
-    struct sockaddr_in addr;
+    int rtp_sockfd;
     char recv_buf[8192];
+    unsigned char rtp_buf[2048];
     char reply[8192];
     struct sockaddr_in peer;
+    struct sockaddr_in rtp_peer;
     socklen_t peer_len = sizeof(peer);
+    socklen_t rtp_peer_len = sizeof(rtp_peer);
     int registered = 0;
     int invited = 0;
     int acked = 0;
@@ -143,31 +216,46 @@ int main(void)
         return 1;
     }
 
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockfd = bind_udp_socket(5060);
     if (sockfd < 0) {
-        perror("socket");
         cleanup_winsock();
         return 1;
     }
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(5060);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
+    rtp_sockfd = bind_udp_socket(30000);
+    if (rtp_sockfd < 0) {
         socket_close(sockfd);
         cleanup_winsock();
         return 1;
     }
 
     printf("GB28181 SIP mock server listening on udp/5060\n");
+    printf("GB28181 RTP mock receiver listening on udp/30000\n");
 
     for (;;) {
-        int ret = recvfrom(sockfd, recv_buf, sizeof(recv_buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
+        fd_set readfds;
+        int maxfd;
+        int ret;
         gb28181_sip_message_t msg;
         char from_ip[64];
+
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+        FD_SET(rtp_sockfd, &readfds);
+        maxfd = sockfd > rtp_sockfd ? sockfd : rtp_sockfd;
+        ret = select(maxfd + 1, &readfds, NULL, NULL, NULL);
+        if (ret <= 0) {
+            continue;
+        }
+
+        if (FD_ISSET(rtp_sockfd, &readfds)) {
+            ret = recvfrom(rtp_sockfd, (char *)rtp_buf, sizeof(rtp_buf), 0, (struct sockaddr *)&rtp_peer, &rtp_peer_len);
+            if (ret > 0) {
+                print_rtp_packet_summary(rtp_buf, ret);
+            }
+            continue;
+        }
+
+        ret = recvfrom(sockfd, recv_buf, sizeof(recv_buf) - 1, 0, (struct sockaddr *)&peer, &peer_len);
         memset(&msg, 0, sizeof(msg));
         if (ret <= 0) {
             continue;
@@ -336,6 +424,7 @@ int main(void)
         send_reply(sockfd, &peer, reply);
     }
 
+    socket_close(rtp_sockfd);
     socket_close(sockfd);
     cleanup_winsock();
     return 0;
