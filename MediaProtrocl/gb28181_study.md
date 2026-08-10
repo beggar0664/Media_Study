@@ -331,8 +331,8 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 <CmdType>Catalog</CmdType>
 <SN>4</SN>
 <DeviceID>34020000001320000001</DeviceID>
-<SumNum>1</SumNum>
-<DeviceList Num="1">
+<SumNum>2</SumNum>
+<DeviceList Num="2">
 <Item>
 <DeviceID>34020000001320000001</DeviceID>
 <Name>Camera-01</Name>
@@ -347,6 +347,21 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 <RegisterWay>1</RegisterWay>
 <Secrecy>0</Secrecy>
 <Status>ON</Status>
+</Item>
+<Item>
+<DeviceID>34020000001320000002</DeviceID>
+<Name>Camera-02</Name>
+<Manufacturer>MockVendor</Manufacturer>
+<Model>IPC-MOCK-02</Model>
+<Owner>3402000000</Owner>
+<CivilCode>340200</CivilCode>
+<Address>Mock Address 2</Address>
+<Parental>0</Parental>
+<ParentID>34020000002000000001</ParentID>
+<SafetyWay>0</SafetyWay>
+<RegisterWay>1</RegisterWay>
+<Secrecy>0</Secrecy>
+<Status>OFF</Status>
 </Item>
 </DeviceList>
 </Response>
@@ -413,6 +428,22 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 | `Status` | 在线/离线状态 |
 
 目前 mock 版本返回的是固定的一条目录项，后续可以把它扩展成真正的设备树或通道树。
+
+当前代码已经把 mock Catalog 响应扩展成两条目录项，并在客户端额外打印：
+
+```text
+===== CATALOG ITEMS =====
+  Item #1
+    DeviceID    : 34020000001320000001
+    Name        : Camera-01
+    Status      : ON
+  Item #2
+    DeviceID    : 34020000001320000002
+    Name        : Camera-02
+    Status      : OFF
+```
+
+这段输出要和 XML 里的 `<DeviceList>` 对照看：`SumNum=2` 表示目录总数，`DeviceList Num="2"` 表示本次响应里带了两条 `<Item>`。每个 `Item` 的 `DeviceID` 就是后续点播时可以选择的通道编号入口。在线状态 `ON/OFF` 则用于判断这个通道当前是否可用。
 
 ### 3.4 DeviceInfo 与 DeviceStatus
 
