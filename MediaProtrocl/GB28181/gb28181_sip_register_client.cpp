@@ -179,6 +179,8 @@ static void print_xml_tag_if_present(const char *xml, const char *tag)
     }
 }
 
+static void print_catalog_items(const char *xml);
+
 static void print_message_xml_summary(const char *title, const gb28181_sip_message_t *msg)
 {
     /*
@@ -212,6 +214,7 @@ static void print_message_xml_summary(const char *title, const gb28181_sip_messa
         print_xml_tag_if_present(msg->body, "Parental");
         print_xml_tag_if_present(msg->body, "ParentID");
         print_xml_tag_if_present(msg->body, "Status");
+        print_catalog_items(msg->body);
     } else if (strcmp(cmd_type, "DeviceInfo") == 0) {
         print_xml_tag_if_present(msg->body, "DeviceName");
         print_xml_tag_if_present(msg->body, "Manufacturer");
@@ -223,6 +226,64 @@ static void print_message_xml_summary(const char *title, const gb28181_sip_messa
         print_xml_tag_if_present(msg->body, "Status");
         print_xml_tag_if_present(msg->body, "Encode");
         print_xml_tag_if_present(msg->body, "Record");
+    }
+}
+
+static void print_catalog_items(const char *xml)
+{
+    const char *cursor;
+    int index = 0;
+
+    if (!xml) {
+        return;
+    }
+
+    cursor = xml;
+    printf("===== CATALOG ITEMS =====\n");
+    while ((cursor = strstr(cursor, "<Item>")) != NULL) {
+        const char *end = strstr(cursor, "</Item>");
+        char item_xml[2048];
+        char value[128];
+
+        if (!end) {
+            break;
+        }
+        if (end <= cursor) {
+            cursor += 6;
+            continue;
+        }
+        if ((size_t)(end - cursor) >= sizeof(item_xml)) {
+            cursor = end + 7;
+            continue;
+        }
+
+        memcpy(item_xml, cursor, (size_t)(end - cursor));
+        item_xml[end - cursor] = '\0';
+
+        printf("  Item #%d\n", ++index);
+        if (gb28181_extract_xml_tag(item_xml, "DeviceID", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            printf("    DeviceID    : %s\n", value);
+        }
+        if (gb28181_extract_xml_tag(item_xml, "Name", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            printf("    Name        : %s\n", value);
+        }
+        if (gb28181_extract_xml_tag(item_xml, "Manufacturer", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            printf("    Manufacturer: %s\n", value);
+        }
+        if (gb28181_extract_xml_tag(item_xml, "Model", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            printf("    Model       : %s\n", value);
+        }
+        if (gb28181_extract_xml_tag(item_xml, "ParentID", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            printf("    ParentID    : %s\n", value);
+        }
+        if (gb28181_extract_xml_tag(item_xml, "Status", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            printf("    Status      : %s\n", value);
+        }
+        cursor = end + 7;
+    }
+
+    if (index == 0) {
+        printf("  <no item found>\n");
     }
 }
 

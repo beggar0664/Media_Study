@@ -66,6 +66,29 @@ typedef struct {
     char algorithm[32];   /* 摘要算法，例如 MD5。 */
 } gb28181_digest_challenge_t;
 
+typedef struct {
+    char device_id[64];
+    char name[128];
+    char manufacturer[64];
+    char model[64];
+    char owner[64];
+    char civil_code[32];
+    char address[128];
+    char parental[16];
+    char parent_id[64];
+    char safety_way[16];
+    char register_way[16];
+    char secrecy[16];
+    char status[16];
+} gb28181_catalog_item_t;
+
+typedef struct {
+    int sum_num;
+    int device_list_num;
+    int item_count;
+    gb28181_catalog_item_t items[16];
+} gb28181_catalog_response_t;
+
 typedef struct gb28181_context_s* gb28181_handle_t;
 
 /* 生命周期接口：创建、启动 RTP、停止、销毁。 */
