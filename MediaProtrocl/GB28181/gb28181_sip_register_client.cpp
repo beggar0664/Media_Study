@@ -151,6 +151,51 @@ static int build_bye_request(const gb28181_config_t *cfg, char *buf, int buf_siz
         cfg->stream_id);
 }
 
+static void send_demo_media_after_ack(const gb28181_config_t *cfg)
+{
+    const unsigned char demo_h264_annexb[] = {
+        0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1f,
+        0xac, 0xd9, 0x40, 0x78, 0x02, 0x27, 0xe5, 0xc0,
+        0x00, 0x00, 0x00, 0x01, 0x68, 0xeb, 0xec, 0xb2,
+        0x2c,
+        0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21,
+        0xa0, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+        0x17, 0x18
+    };
+    unsigned char ps_pack[512];
+    gb28181_config_t media_cfg;
+    gb28181_handle_t handle;
+    int ps_len;
+    int ret;
+
+    media_cfg = *cfg;
+    snprintf(media_cfg.remote_rtp_ip, sizeof(media_cfg.remote_rtp_ip), "%s", "127.0.0.1");
+    media_cfg.remote_rtp_port = 30000;
+
+    ps_len = gb28181_build_ps_pack_h264(demo_h264_annexb, (int)sizeof(demo_h264_annexb), 9000, 9000, ps_pack, (int)sizeof(ps_pack));
+    if (ps_len <= 0) {
+        printf("media demo: build PS failed ret=%d\n", ps_len);
+        return;
+    }
+
+    printf("===== RTP/PS MEDIA AFTER ACK =====\n");
+    printf("target channel=%s remote_rtp=%s:%d ps_len=%d\n", media_cfg.stream_id, media_cfg.remote_rtp_ip, media_cfg.remote_rtp_port, ps_len);
+    handle = gb28181_create(&media_cfg);
+    if (!handle) {
+        printf("media demo: create context failed\n");
+        return;
+    }
+    ret = gb28181_start(handle);
+    if (ret == 0) {
+        ret = gb28181_send_rtp_packet(handle, ps_pack, ps_len, 9000, 1);
+        printf("media demo: send PS over RTP ret=%d marker=1 timestamp_inc=9000\n", ret);
+        gb28181_stop(handle);
+    } else {
+        printf("media demo: start RTP failed ret=%d\n", ret);
+    }
+    gb28181_destroy(handle);
+}
+
 static void send_message_and_print_response(int sockfd,
                                             const struct sockaddr_in *remote_addr,
                                             const char *title,
@@ -496,7 +541,8 @@ int main(void)
                                         build_ack_request(&cfg, request, sizeof(request));
                                         printf("===== ACK =====\n%s\n", request);
                                         send_sip_message(sockfd, &remote_addr, request);
-                                        /* ACK 之后才进入真正的媒体阶段；这里为了演示，马上用 BYE 结束会话。 */
+                                        send_demo_media_after_ack(&cfg);
+                                        /* 媒体演示发完后，用 BYE 结束本次学习会话。 */
                                         build_bye_request(&cfg, request, sizeof(request));
                                         printf("===== BYE =====\n%s\n", request);
                                         send_sip_message(sockfd, &remote_addr, request);

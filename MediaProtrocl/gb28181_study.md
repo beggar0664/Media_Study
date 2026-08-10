@@ -457,6 +457,16 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 
 这样 `Catalog` 和 `INVITE` 的关系就连起来了：`Catalog` 负责告诉你有哪些通道，`INVITE` 负责对其中某个通道发起媒体会话。后续继续学习点播时，重点就从“能不能查到目录”转成“能不能对选中的通道谈 SDP 并开始 RTP/PS 传输”。
 
+当前 client 已经把这个最小链路继续接到了媒体阶段：收到 `200 OK + SDP` 后先发 `ACK`，再发送一包学习用 `PS over RTP`，最后用 `BYE` 结束会话。运行时会看到：
+
+```text
+===== RTP/PS MEDIA AFTER ACK =====
+target channel=34020000001320000001 remote_rtp=127.0.0.1:30000 ps_len=69
+media demo: send PS over RTP ret=69 marker=1 timestamp_inc=9000
+```
+
+这里的媒体包还是演示数据，不是摄像头真实采集数据。它的学习意义是把链路连完整：`Catalog 选通道 -> INVITE/SDP 建会 -> ACK 确认 -> RTP/PS 发媒体 -> BYE 结束`。
+
 ### 3.4 DeviceInfo 与 DeviceStatus
 
 在 GB28181 里，除了目录查询，常见的两个查询消息还有 `DeviceInfo` 和 `DeviceStatus`。它们和 Catalog 一样，都是通过 SIP `MESSAGE` 承载 XML body。区别只是业务语义不同：
@@ -742,7 +752,7 @@ UDP: 目的端口是 30000，RTP payload type 是 96
 | `gb28181_sip_mock_server.cpp` | 收 `INVITE` 后返回 `200 OK + SDP`，收 `BYE` 后返回 `200 OK` |
 | `gb28181_minimal_example.cpp` | 单独演示 RTP packet、PS over RTP、RTP 分片 |
 
-当前示例里 SIP 会话控制和 RTP 媒体发送是分开演示的：`gb28181_sip_register_client.exe` 用来学 SIP/SDP 会话控制，`gb28181_minimal_example.exe` 用来学 RTP/PS over RTP 媒体承载。
+当前示例里，`gb28181_sip_register_client.exe` 已经在 `ACK` 后发送一包学习用 `PS over RTP`，用于串起最小点播链路；`gb28181_minimal_example.exe` 仍然用于更细地学习裸 H.264、PS over RTP、FU-A 和 RTP 分片。
 
 ### 4.1 SDP 和容器头是不是重叠
 
