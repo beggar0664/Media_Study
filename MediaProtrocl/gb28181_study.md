@@ -516,6 +516,31 @@ MESSAGE DeviceStatus Query
 
 这里有一个容易踩坑的点：平台收到设备对响应 MESSAGE 返回的 `SIP/2.0 200 OK` 时，不能再把它当成新的请求处理。mock server 现在会识别 `msg.is_response` 并直接忽略这类响应报文，否则后续 DeviceInfo、DeviceStatus、INVITE 的接收队列会被错误的 `501 Not Implemented` 或旧 MESSAGE 污染。
 
+为了让运行日志更容易读，`gb28181_sip_register_client.cpp` 现在在收到平台返回的响应 MESSAGE 后，会额外打印一段 `XML SUMMARY`。这段摘要不是新的协议报文，只是把原始 XML body 里的关键字段抽出来：
+
+```text
+===== MESSAGE Catalog XML SUMMARY =====
+  CmdType     : Catalog
+  SN          : 5
+  DeviceID    : 34020000002000000001
+  SumNum      : 1
+  Name        : Camera-01
+  Manufacturer: MockVendor
+  Model       : IPC-MOCK-01
+  Status      : ON
+```
+
+学习时可以这样看：
+
+| 原始输出 | 作用 |
+|---|---|
+| `MESSAGE Catalog RESPONSE #1` | 平台对查询事务先回 `200 OK`，表示“我收到了” |
+| `MESSAGE Catalog RESPONSE #2` | 平台再主动发 Catalog 响应 MESSAGE，真正业务数据在 XML body 里 |
+| `MESSAGE Catalog XML SUMMARY` | client 帮你把 XML 关键字段提取出来，便于学习字段含义 |
+| `MESSAGE Catalog RESPONSE #2 ACK` | 设备对平台发来的响应 MESSAGE 再回 `200 OK` |
+
+`DeviceInfo` 和 `DeviceStatus` 也是同样逻辑，只是 XML 字段不同：前者看设备名称、厂商、型号、固件；后者看在线状态、编码状态、录像状态。
+
 ## 4. SDP 是什么
 
 SDP 是 SIP body 里的媒体描述文本。它不传媒体数据，只告诉对端“媒体要怎么传”。

@@ -170,6 +170,62 @@ static void send_message_and_print_response(int sockfd,
     }
 }
 
+static void print_xml_tag_if_present(const char *xml, const char *tag)
+{
+    char value[128];
+    value[0] = '\0';
+    if (gb28181_extract_xml_tag(xml, tag, value, sizeof(value)) >= 0 && value[0] != '\0') {
+        printf("  %-12s: %s\n", tag, value);
+    }
+}
+
+static void print_message_xml_summary(const char *title, const gb28181_sip_message_t *msg)
+{
+    /*
+     * 学习用 XML 摘要：原始 SIP/MESSAGE 已经完整打印，这里只把 body 里的业务字段再列一遍。
+     * 对应文档：../gb28181_study.md 的 MESSAGE / Catalog / DeviceInfo / DeviceStatus 章节。
+     */
+    char cmd_type[64];
+
+    if (!msg || !msg->body || msg->body[0] == '\0') {
+        return;
+    }
+
+    cmd_type[0] = '\0';
+    gb28181_extract_xml_tag(msg->body, "CmdType", cmd_type, sizeof(cmd_type));
+    if (cmd_type[0] == '\0') {
+        return;
+    }
+
+    printf("===== %s XML SUMMARY =====\n", title);
+    print_xml_tag_if_present(msg->body, "CmdType");
+    print_xml_tag_if_present(msg->body, "SN");
+    print_xml_tag_if_present(msg->body, "DeviceID");
+
+    if (strcmp(cmd_type, "Catalog") == 0) {
+        print_xml_tag_if_present(msg->body, "SumNum");
+        print_xml_tag_if_present(msg->body, "Name");
+        print_xml_tag_if_present(msg->body, "Manufacturer");
+        print_xml_tag_if_present(msg->body, "Model");
+        print_xml_tag_if_present(msg->body, "Owner");
+        print_xml_tag_if_present(msg->body, "CivilCode");
+        print_xml_tag_if_present(msg->body, "Parental");
+        print_xml_tag_if_present(msg->body, "ParentID");
+        print_xml_tag_if_present(msg->body, "Status");
+    } else if (strcmp(cmd_type, "DeviceInfo") == 0) {
+        print_xml_tag_if_present(msg->body, "DeviceName");
+        print_xml_tag_if_present(msg->body, "Manufacturer");
+        print_xml_tag_if_present(msg->body, "Model");
+        print_xml_tag_if_present(msg->body, "Firmware");
+        print_xml_tag_if_present(msg->body, "Result");
+    } else if (strcmp(cmd_type, "DeviceStatus") == 0) {
+        print_xml_tag_if_present(msg->body, "Online");
+        print_xml_tag_if_present(msg->body, "Status");
+        print_xml_tag_if_present(msg->body, "Encode");
+        print_xml_tag_if_present(msg->body, "Record");
+    }
+}
+
 static void send_query_and_print_responses(int sockfd,
                                            const struct sockaddr_in *remote_addr,
                                            const char *title,
@@ -196,6 +252,7 @@ static void send_query_and_print_responses(int sockfd,
         memset(&msg, 0, sizeof(msg));
         if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && strcmp(msg.method, "MESSAGE") == 0) {
             char ok[2048];
+            print_message_xml_summary(title, &msg);
             snprintf(ok, sizeof(ok),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"
