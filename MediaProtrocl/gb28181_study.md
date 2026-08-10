@@ -445,6 +445,18 @@ Catalog 查询的 body 现在在代码里对应 `gb28181_build_message_catalog()
 
 这段输出要和 XML 里的 `<DeviceList>` 对照看：`SumNum=2` 表示目录总数，`DeviceList Num="2"` 表示本次响应里带了两条 `<Item>`。每个 `Item` 的 `DeviceID` 就是后续点播时可以选择的通道编号入口。在线状态 `ON/OFF` 则用于判断这个通道当前是否可用。
 
+当前 client 会选择第一条 `Status=ON` 的目录项作为后续 `INVITE` 的目标通道，并打印：
+
+```text
+===== SELECTED CATALOG CHANNEL =====
+34020000001320000001
+
+===== INVITE TARGET CHANNEL FROM CATALOG =====
+34020000001320000001
+```
+
+这样 `Catalog` 和 `INVITE` 的关系就连起来了：`Catalog` 负责告诉你有哪些通道，`INVITE` 负责对其中某个通道发起媒体会话。后续继续学习点播时，重点就从“能不能查到目录”转成“能不能对选中的通道谈 SDP 并开始 RTP/PS 传输”。
+
 ### 3.4 DeviceInfo 与 DeviceStatus
 
 在 GB28181 里，除了目录查询，常见的两个查询消息还有 `DeviceInfo` 和 `DeviceStatus`。它们和 Catalog 一样，都是通过 SIP `MESSAGE` 承载 XML body。区别只是业务语义不同：

@@ -179,7 +179,7 @@ static void print_xml_tag_if_present(const char *xml, const char *tag)
     }
 }
 
-static void print_catalog_items(const char *xml);
+static void print_catalog_items(const char *xml, char *selected_id, int selected_id_size);
 
 static void print_message_xml_summary(const char *title, const gb28181_sip_message_t *msg)
 {
@@ -214,7 +214,6 @@ static void print_message_xml_summary(const char *title, const gb28181_sip_messa
         print_xml_tag_if_present(msg->body, "Parental");
         print_xml_tag_if_present(msg->body, "ParentID");
         print_xml_tag_if_present(msg->body, "Status");
-        print_catalog_items(msg->body);
     } else if (strcmp(cmd_type, "DeviceInfo") == 0) {
         print_xml_tag_if_present(msg->body, "DeviceName");
         print_xml_tag_if_present(msg->body, "Manufacturer");
@@ -229,7 +228,7 @@ static void print_message_xml_summary(const char *title, const gb28181_sip_messa
     }
 }
 
-static void print_catalog_items(const char *xml)
+static void print_catalog_items(const char *xml, char *selected_id, int selected_id_size)
 {
     const char *cursor;
     int index = 0;
@@ -244,6 +243,8 @@ static void print_catalog_items(const char *xml)
         const char *end = strstr(cursor, "</Item>");
         char item_xml[2048];
         char value[128];
+        char item_device_id[64];
+        char item_status[16];
 
         if (!end) {
             break;
@@ -259,9 +260,12 @@ static void print_catalog_items(const char *xml)
 
         memcpy(item_xml, cursor, (size_t)(end - cursor));
         item_xml[end - cursor] = '\0';
+        item_device_id[0] = '\0';
+        item_status[0] = '\0';
 
         printf("  Item #%d\n", ++index);
         if (gb28181_extract_xml_tag(item_xml, "DeviceID", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            snprintf(item_device_id, sizeof(item_device_id), "%s", value);
             printf("    DeviceID    : %s\n", value);
         }
         if (gb28181_extract_xml_tag(item_xml, "Name", value, sizeof(value)) >= 0 && value[0] != '\0') {
@@ -277,7 +281,11 @@ static void print_catalog_items(const char *xml)
             printf("    ParentID    : %s\n", value);
         }
         if (gb28181_extract_xml_tag(item_xml, "Status", value, sizeof(value)) >= 0 && value[0] != '\0') {
+            snprintf(item_status, sizeof(item_status), "%s", value);
             printf("    Status      : %s\n", value);
+        }
+        if (selected_id && selected_id_size > 0 && selected_id[0] == '\0' && strcmp(item_status, "ON") == 0 && item_device_id[0] != '\0') {
+            snprintf(selected_id, (size_t)selected_id_size, "%s", item_device_id);
         }
         cursor = end + 7;
     }
@@ -292,7 +300,9 @@ static void send_query_and_print_responses(int sockfd,
                                            const char *title,
                                            const char *request,
                                            char *recv_buf,
-                                           int recv_buf_size)
+                                           int recv_buf_size,
+                                           char *selected_catalog_id,
+                                           int selected_catalog_id_size)
 {
     int ret;
     printf("===== %s =====\n%s\n", title, request);
@@ -314,6 +324,18 @@ static void send_query_and_print_responses(int sockfd,
         if (gb28181_parse_sip_message(recv_buf, &msg) == 0 && strcmp(msg.method, "MESSAGE") == 0) {
             char ok[2048];
             print_message_xml_summary(title, &msg);
+            if (selected_catalog_id && selected_catalog_id_size > 0 && msg.body) {
+                char cmd_type[64];
+                cmd_type[0] = '\0';
+                gb28181_extract_xml_tag(msg.body, "CmdType", cmd_type, sizeof(cmd_type));
+                if (strcmp(cmd_type, "Catalog") == 0) {
+                    selected_catalog_id[0] = '\0';
+                    print_catalog_items(msg.body, selected_catalog_id, selected_catalog_id_size);
+                    if (selected_catalog_id[0] != '\0') {
+                        printf("===== SELECTED CATALOG CHANNEL =====\n%s\n", selected_catalog_id);
+                    }
+                }
+            }
             snprintf(ok, sizeof(ok),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"
@@ -341,6 +363,7 @@ int main(void)
     char uri[256];
     char recv_buf[8192];
     char auth_request[8192];
+    char selected_catalog_id[64];
     gb28181_digest_challenge_t challenge;
     struct sockaddr_in local_addr;
     struct sockaddr_in remote_addr;
@@ -360,6 +383,7 @@ int main(void)
     cfg.local_rtp_port = 10000;
     cfg.payload_type = 96;
     cfg.ssrc = 0x12345678;
+    selected_catalog_id[0] = '\0';
 
     if (init_winsock() != 0) {
         printf("WSAStartup failed\n");
@@ -450,11 +474,15 @@ int main(void)
                                 gb28181_build_message_keepalive(&cfg, 3, request, sizeof(request));
                                 send_message_and_print_response(sockfd, &remote_addr, "MESSAGE Keepalive", request, recv_buf, sizeof(recv_buf));
                                 gb28181_build_message_catalog(&cfg, 4, request, sizeof(request));
-                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE Catalog", request, recv_buf, sizeof(recv_buf));
+                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE Catalog", request, recv_buf, sizeof(recv_buf), selected_catalog_id, sizeof(selected_catalog_id));
+                                if (selected_catalog_id[0] != '\0') {
+                                    snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", selected_catalog_id);
+                                    printf("===== INVITE TARGET CHANNEL FROM CATALOG =====\n%s\n", cfg.stream_id);
+                                }
                                 gb28181_build_message_device_info_query(&cfg, 6, request, sizeof(request));
-                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceInfo", request, recv_buf, sizeof(recv_buf));
+                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceInfo", request, recv_buf, sizeof(recv_buf), NULL, 0);
                                 gb28181_build_message_device_status_query(&cfg, 8, request, sizeof(request));
-                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceStatus", request, recv_buf, sizeof(recv_buf));
+                                send_query_and_print_responses(sockfd, &remote_addr, "MESSAGE DeviceStatus", request, recv_buf, sizeof(recv_buf), NULL, 0);
                                 /* 再发 INVITE，开始媒体会话协商；真正发媒体前还要等 200 OK + SDP。 */
                                 build_invite_request(&cfg, request, sizeof(request));
                                 printf("===== INVITE + SDP =====\n%s\n", request);
