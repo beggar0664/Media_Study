@@ -1022,6 +1022,49 @@ PS over RTP:
 
 抓包学习时可以直接看 RTP payload 开头：如果是 `65`，说明 payload 是 H.264 IDR NALU；如果是 `00 00 01 BA`，说明 payload 是 PS pack。
 
+### 10.3 裸 H.264 FU-A 分片
+
+裸 H.264 over RTP 还有一种标准分片方式叫 `FU-A`。它不是 PS 分片，而是把一个过大的 H.264 NALU 拆成多个 RTP payload。
+
+对一个 IDR NALU 来说，原始 NALU 可能以 `65` 开头：
+
+```text
+65 ...
+```
+
+如果这个 NALU 太大，FU-A 会把原始 `65` 拆成两个 FU 头字节：
+
+```text
+7C 85  -> FU-A first fragment, S=1, E=0, original type=5(IDR)
+7C 05  -> FU-A middle fragment, S=0, E=0, original type=5(IDR)
+7C 45  -> FU-A last fragment, S=0, E=1, original type=5(IDR)
+```
+
+这两个字节的含义：
+
+| 字节 | 含义 |
+|---|---|
+| `7C` | FU indicator，NAL unit type=28，表示这是 FU-A |
+| `85` | FU header，`S=1` 表示首片，低 5 位 `5` 表示原始 NALU 是 IDR |
+| `05` | FU header，中间片，仍然属于原始 IDR NALU |
+| `45` | FU header，`E=1` 表示末片 |
+
+抓包时可以这样区分三种 RTP payload：
+
+| RTP payload 开头 | 说明 |
+|---|---|
+| `65` | 裸 H.264 IDR 单包发送 |
+| `7C 85 / 7C 05 / 7C 45` | 裸 H.264 IDR 使用 FU-A 分片发送 |
+| `00 00 01 BA` | PS over RTP，payload 里先是 PS pack header |
+
+当前 `gb28181_minimal_example.exe` 会额外打印：
+
+```text
+sending H.264 FU-A fragmented IDR: max_payload=24
+```
+
+这一步是为了学习 H.264 RTP 负载格式。国标 GB28181 工程里更常见的是 `PS over RTP`，也就是先把 H.264/H.265 放进 PS/PES，再把 PS 数据切进 RTP。两者都可能出现在学习中，但层次不同：FU-A 是编码负载层的 RTP 分片，PS over RTP 是容器负载被 RTP 承载。
+
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
 ```text

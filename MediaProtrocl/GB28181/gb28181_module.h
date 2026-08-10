@@ -122,6 +122,12 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
                                         int payload_size,
                                         int max_payload_size,
                                         unsigned int timestamp_inc);
+/* H.264 FU-A 分片：用于学习裸 H.264 NALU over RTP 的标准分片方式。 */
+int gb28181_send_h264_fu_a(gb28181_handle_t handle,
+                           const unsigned char *nalu,
+                           int nalu_size,
+                           int max_payload_size,
+                           unsigned int timestamp_inc);
 
 #ifdef __cplusplus
 }

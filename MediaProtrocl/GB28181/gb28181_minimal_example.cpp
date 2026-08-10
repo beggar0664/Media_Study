@@ -48,6 +48,7 @@ int main(void)
         0x17, 0x18
     };
     unsigned char demo_ps_pack[512];
+    unsigned char large_idr_nalu[256];
     unsigned char normal_h264_annexb[2048];
     unsigned char normal_ps_pack[4096];
     int demo_ps_len;
@@ -72,6 +73,12 @@ int main(void)
     snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
     cfg.payload_type = 96;
     cfg.ssrc = 0x12345678;
+
+    large_idr_nalu[0] = 0x65;
+    for (normal_h264_len = 1; normal_h264_len < (int)sizeof(large_idr_nalu); ++normal_h264_len) {
+        large_idr_nalu[normal_h264_len] = (unsigned char)(0x80 + (normal_h264_len & 0x3F));
+    }
+    normal_h264_len = 0;
 
     memcpy(normal_h264_annexb + normal_h264_len, demo_h264_annexb, sizeof(demo_h264_annexb));
     normal_h264_len += (int)sizeof(demo_h264_annexb);
@@ -143,6 +150,12 @@ int main(void)
             printf("sending fragmented PS-over-RTP packets: max_payload=24\n");
             ret = gb28181_send_rtp_payload_fragmented(handle, demo_ps_pack, demo_ps_len, 24, 9000);
             printf("[3/4] send fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)demo_ps_len, 9000u);
+        }
+        if (ret >= 0) {
+            /* H.264 FU-A: RTP payload starts with FU indicator and FU header, not a raw 0x65 NALU byte. */
+            printf("sending H.264 FU-A fragmented IDR: max_payload=24\n");
+            ret = gb28181_send_h264_fu_a(handle, large_idr_nalu, (int)sizeof(large_idr_nalu), 24, 9000);
+            printf("[3/4] send H264 FU-A total=%d nalu_len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)sizeof(large_idr_nalu), 9000u);
         }
         if (ret >= 0 && normal_ps_len > 0) {
             /* 这个分片尺寸更接近实际工程，通常会让单包接近 MTU 上限但不超过。 */

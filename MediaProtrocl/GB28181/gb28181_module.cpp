@@ -1168,3 +1168,60 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
 
     return total_sent;
 }
+
+int gb28181_send_h264_fu_a(gb28181_handle_t handle,
+                           const unsigned char *nalu,
+                           int nalu_size,
+                           int max_payload_size,
+                           unsigned int timestamp_inc)
+{
+    /*
+     * H.264 FU-A 标准分片：只处理裸 NALU，不处理 Annex-B start code。
+     * RTP payload = FU indicator(0x7C with original NRI) + FU header(S/E/type) + NALU slice。
+     */
+    unsigned char packet[1500];
+    unsigned char nalu_header;
+    unsigned char fu_indicator;
+    unsigned char nalu_type;
+    int offset;
+    int total_sent = 0;
+
+    if (!handle || !nalu || nalu_size <= 1 || max_payload_size <= 2) {
+        return -1;
+    }
+    if (max_payload_size > (int)sizeof(packet)) {
+        return -2;
+    }
+
+    nalu_header = nalu[0];
+    nalu_type = (unsigned char)(nalu_header & 0x1F);
+    fu_indicator = (unsigned char)((nalu_header & 0xE0) | 28);
+    offset = 1;
+
+    while (offset < nalu_size) {
+        int remaining = nalu_size - offset;
+        int chunk = remaining > (max_payload_size - 2) ? (max_payload_size - 2) : remaining;
+        int is_first = (offset == 1);
+        int is_last = (offset + chunk >= nalu_size);
+        int ret;
+
+        packet[0] = fu_indicator;
+        packet[1] = nalu_type;
+        if (is_first) {
+            packet[1] = (unsigned char)(packet[1] | 0x80);
+        }
+        if (is_last) {
+            packet[1] = (unsigned char)(packet[1] | 0x40);
+        }
+        memcpy(packet + 2, nalu + offset, (size_t)chunk);
+
+        ret = gb28181_send_rtp_packet(handle, packet, chunk + 2, is_last ? timestamp_inc : 0, is_last ? 1 : 0);
+        if (ret < 0) {
+            return ret;
+        }
+        total_sent += chunk;
+        offset += chunk;
+    }
+
+    return total_sent;
+}
