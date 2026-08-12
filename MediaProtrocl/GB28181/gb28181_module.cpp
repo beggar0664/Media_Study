@@ -266,13 +266,7 @@ int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_si
         config->username, cfg_local_ip(config), cfg_local_sip_port(config));
 }
 
-/*
-function 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。 
-param config: 模块配置。
-param buf: 缓冲区。
-param buf_size: 缓冲区大小。
-param ssrc: SSRC 值, 同步源 ID。
-*/
+/* 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。 */
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc)
 {
     /*

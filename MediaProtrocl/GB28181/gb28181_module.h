@@ -27,8 +27,8 @@ typedef struct {
     int local_rtp_port;
     char remote_rtp_ip[64];
     int remote_rtp_port;
-    char media_ip[64];       /* Backward-compatible alias for local_ip. */
-    int media_port;          /* Backward-compatible alias for local_rtp_port. */
+    char media_ip[64];       /* local_ip 的兼容别名。 */
+    int media_port;          /* local_rtp_port 的兼容别名。 */
     char stream_id[64];
     int payload_type;
     int use_tcp;

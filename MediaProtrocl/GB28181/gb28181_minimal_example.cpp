@@ -147,7 +147,7 @@ int main(void)
         }
         if (ret >= 0 && demo_ps_len > 0) {
             int repeat_idx;
-            /* 连续发几包相同的 PS payload，观察 seq / timestamp / marker 的变化。 */
+            /* 连续发送相同的 PS payload，观察 seq / timestamp / marker 的变化。 */
             printf("sending repeated PS-over-RTP packets for seq/timestamp inspection\n");
             for (repeat_idx = 0; repeat_idx < 3; ++repeat_idx) {
                 ret = gb28181_send_rtp_packet(handle, demo_ps_pack, demo_ps_len, 9000, 1);
@@ -159,7 +159,7 @@ int main(void)
             }
         }
         if (ret >= 0 && demo_ps_len > 0) {
-            /* 故意把 payload 压得很小，逼出多个 RTP 包，方便看 seq/timestamp/marker。 */
+            /* 故意把 payload 压得很小，逼出多个 RTP 包，方便看 seq / timestamp / marker。 */
             printf("sending fragmented PS-over-RTP packets: max_payload=24\n");
             ret = gb28181_send_rtp_payload_fragmented(handle, demo_ps_pack, demo_ps_len, 24, 9000);
             printf("[3/4] send fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)demo_ps_len, 9000u);
@@ -181,7 +181,7 @@ int main(void)
 #else
         sleep(5);
 #endif
-        /* 重复发同一 IDR，便于在抓包里对比连续包的时间戳和序号。 */
+        /* 重复发送同一 IDR，便于在抓包里对比连续包的时间戳和序号。 */
         printf("repeat IDR packets for packet inspection\n");
         for (i = 0; i < 4; ++i) {
             ret = gb28181_send_rtp_packet(handle, demo_h264_idr, sizeof(demo_h264_idr), 9000, 1);

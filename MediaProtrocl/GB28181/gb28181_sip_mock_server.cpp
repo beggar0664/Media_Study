@@ -165,9 +165,9 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
 
     /*
      * RTP 头字段要回到 SDP 里解释：
-     *   pt       -> SDP 的 m= / a=rtpmap，例如 PT 96 表示 H264/90000
-     *   timestamp-> 按 a=rtpmap 的 90000 Hz 时钟解释
-     *   ssrc     -> SDP 的 a=ssrc，日志里用十六进制打印
+     *   pt        -> SDP 的 m= / a=rtpmap，例如 PT 96 表示 H264/90000
+     *   timestamp  -> 按 a=rtpmap 的 90000 Hz 时钟解释
+     *   ssrc       -> SDP 的 a=ssrc，日志里用十六进制打印
      * payload 可能是裸 H.264，也可能是 GB28181 常见的 PS over RTP。
      */
     printf("===== RTP RX udp/30000 =====\n");
