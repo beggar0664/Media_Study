@@ -1242,6 +1242,36 @@ PS over RTP:
   PES payload 中保留 Annex-B 起始码: 00 00 00 01 67 / 68 / 65
 ```
 
+现在这个示例还会连续发送 3 个相同的 PS over RTP 包，专门用来观察 `seq / timestamp / marker` 的变化，而不是只看单包：
+
+```text
+sending repeated PS-over-RTP packets for seq/timestamp inspection
+```
+
+实际运行时，你会在 mock server 里看到类似这样的连续包：
+
+```text
+seq=31727 timestamp=1142720095 marker=1 payload_len=69
+seq=31728 timestamp=1142729095 marker=1 payload_len=69
+seq=31729 timestamp=1142738095 marker=1 payload_len=69
+seq=31730 timestamp=1142747095 marker=1 payload_len=69
+```
+
+这说明三件事：
+
+| 观察点 | 说明 |
+|---|---|
+| `seq` 连续递增 | 每个 RTP 包都有自己的序号，接收端可以据此检查丢包和乱序 |
+| `timestamp` 每次加 9000 | 说明这批包按同一个 90kHz 时间基推进 0.1 秒 |
+| `marker=1` | 当前这个演示包被当作完整访问单元发出，包边界已经到了 |
+
+这和前面的分片包不一样：
+
+- 完整 PS 包：`payload_len=69`，一包就能把 `00 00 01 BA -> 00 00 01 E0 -> PES -> NALU` 带完整。
+- 分片 PS 包：payload 被切碎后，前几包只够看到 `PS pack header` 或 `PES header`，后面包才把 NALU 补齐。
+
+所以学习顺序应该是：先看完整 PS 包，再看分片 PS 包，最后看 FU-A。这样能先建立“完整链路”概念，再看“怎么拆和重组”。
+
 抓包学习时可以直接看 RTP payload 开头：如果是 `65`，说明 payload 是 H.264 IDR NALU；如果是 `00 00 01 BA`，说明 payload 是 PS pack。
 
 ### 10.3 裸 H.264 FU-A 分片
