@@ -86,6 +86,58 @@ static int bind_udp_socket(int port)
     return sockfd;
 }
 
+static int find_bytes(const unsigned char *data, int size, const unsigned char *pattern, int pattern_size)
+{
+    int i;
+    if (!data || !pattern || size < pattern_size || pattern_size <= 0) {
+        return -1;
+    }
+    for (i = 0; i <= size - pattern_size; ++i) {
+        if (memcmp(data + i, pattern, (size_t)pattern_size) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void print_ps_payload_summary(const unsigned char *payload, int payload_size)
+{
+    const unsigned char ps_pack_start[] = {0x00, 0x00, 0x01, 0xBA};
+    const unsigned char video_pes_start[] = {0x00, 0x00, 0x01, 0xE0};
+    const unsigned char annexb_start[] = {0x00, 0x00, 0x00, 0x01};
+    int ps_offset;
+    int pes_offset;
+    int nalu_offset;
+
+    ps_offset = find_bytes(payload, payload_size, ps_pack_start, (int)sizeof(ps_pack_start));
+    pes_offset = find_bytes(payload, payload_size, video_pes_start, (int)sizeof(video_pes_start));
+    nalu_offset = find_bytes(payload, payload_size, annexb_start, (int)sizeof(annexb_start));
+
+    printf("PS scan: pack_start=%d video_pes=%d annexb_nalu=%d\n", ps_offset, pes_offset, nalu_offset);
+    if (pes_offset >= 0 && pes_offset + 9 < payload_size) {
+        unsigned int pes_len = (unsigned int)((payload[pes_offset + 4] << 8) | payload[pes_offset + 5]);
+        unsigned int pes_flags = payload[pes_offset + 7];
+        unsigned int pes_header_len = payload[pes_offset + 8];
+        printf("PES detail: stream_id=0x%02X pes_len=%u flags=0x%02X header_len=%u\n",
+               payload[pes_offset + 3], pes_len, pes_flags, pes_header_len);
+        if (pes_header_len >= 5 && pes_offset + 14 <= payload_size) {
+            const unsigned char *pts = payload + pes_offset + 9;
+            unsigned long long pts_90khz;
+            pts_90khz = ((unsigned long long)((pts[0] >> 1) & 0x07) << 30) |
+                        ((unsigned long long)pts[1] << 22) |
+                        ((unsigned long long)((pts[2] >> 1) & 0x7F) << 15) |
+                        ((unsigned long long)pts[3] << 7) |
+                        ((unsigned long long)((pts[4] >> 1) & 0x7F));
+            printf("PTS detail: bytes=%02X %02X %02X %02X %02X value=%llu (90kHz)\n",
+                   pts[0], pts[1], pts[2], pts[3], pts[4], pts_90khz);
+        }
+    }
+    if (nalu_offset >= 0 && nalu_offset + 4 < payload_size) {
+        unsigned int nalu_type = payload[nalu_offset + 4] & 0x1F;
+        printf("NALU detail: first_byte=0x%02X h264_type=%u\n", payload[nalu_offset + 4], nalu_type);
+    }
+}
+
 static void print_rtp_packet_summary(const unsigned char *data, int size)
 {
     unsigned int version;
@@ -111,6 +163,13 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
     ssrc = ((uint32_t)data[8] << 24) | ((uint32_t)data[9] << 16) | ((uint32_t)data[10] << 8) | data[11];
     payload_size = size - payload_offset;
 
+    /*
+     * RTP 头字段要回到 SDP 里解释：
+     *   pt       -> SDP 的 m= / a=rtpmap，例如 PT 96 表示 H264/90000
+     *   timestamp-> 按 a=rtpmap 的 90000 Hz 时钟解释
+     *   ssrc     -> SDP 的 a=ssrc，日志里用十六进制打印
+     * payload 可能是裸 H.264，也可能是 GB28181 常见的 PS over RTP。
+     */
     printf("===== RTP RX udp/30000 =====\n");
     printf("version=%u pt=%u marker=%u seq=%u timestamp=%u ssrc=0x%08X payload_len=%d\n",
            version, payload_type, marker, seq, timestamp, ssrc, payload_size);
@@ -122,6 +181,7 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
     if (payload_size >= 4 && data[payload_offset] == 0x00 && data[payload_offset + 1] == 0x00 &&
         data[payload_offset + 2] == 0x01 && data[payload_offset + 3] == 0xBA) {
         printf("payload type guess: PS pack header 00 00 01 BA\n");
+        print_ps_payload_summary(data + payload_offset, payload_size);
     } else if (payload_size > 0 && (data[payload_offset] & 0x1F) == 5) {
         printf("payload type guess: raw H.264 IDR NALU\n");
     } else if (payload_size >= 2 && (data[payload_offset] & 0x1F) == 28) {
@@ -363,7 +423,7 @@ int main(void)
         }
 
         if (registered && strcmp(msg.method, "INVITE") == 0) {
-            /* INVITE 返回 SDP，说明平台愿意接受媒体会话。 */
+            /* INVITE 返回 SDP，说明平台愿意接受媒体会话，并声明接收侧 RTP 参数。 */
             char sdp[1024];
             int sdp_len;
             build_play_sdp(sdp, sizeof(sdp));

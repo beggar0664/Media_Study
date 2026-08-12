@@ -113,7 +113,7 @@ static int build_invite_request(const gb28181_config_t *cfg, char *buf, int buf_
 
 static int build_ack_request(const gb28181_config_t *cfg, char *buf, int buf_size)
 {
-    /* ACK 确认 INVITE 事务，表示双方对会话参数已确认。 */
+    /* ACK 只是确认 INVITE 的 SDP 参数，不携带媒体数据。 */
     return snprintf(buf, buf_size,
         "ACK sip:%s@%s SIP/2.0\r\n"
         "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-ack\r\n"
@@ -134,7 +134,7 @@ static int build_ack_request(const gb28181_config_t *cfg, char *buf, int buf_siz
 
 static int build_bye_request(const gb28181_config_t *cfg, char *buf, int buf_size)
 {
-    /* BYE 结束会话。 */
+    /* BYE 结束 dialog。 */
     return snprintf(buf, buf_size,
         "BYE sip:%s@%s SIP/2.0\r\n"
         "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-bye\r\n"
@@ -172,6 +172,11 @@ static void send_demo_media_after_ack(const gb28181_config_t *cfg)
     snprintf(media_cfg.remote_rtp_ip, sizeof(media_cfg.remote_rtp_ip), "%s", "127.0.0.1");
     media_cfg.remote_rtp_port = 30000;
 
+    /*
+     * 9000 是 90kHz 时钟下的 0.1 秒：9000 / 90000 = 0.1s。
+     * 这里同时把 PES PTS 写成 9000，后面 RTP 发送也用 timestamp_inc=9000，
+     * 便于抓包时对比“容器层 PTS”和“传输层 RTP timestamp”的关系。
+     */
     ps_len = gb28181_build_ps_pack_h264(demo_h264_annexb, (int)sizeof(demo_h264_annexb), 9000, 9000, ps_pack, (int)sizeof(ps_pack));
     if (ps_len <= 0) {
         printf("media demo: build PS failed ret=%d\n", ps_len);
@@ -187,6 +192,7 @@ static void send_demo_media_after_ack(const gb28181_config_t *cfg)
     }
     ret = gb28181_start(handle);
     if (ret == 0) {
+        /* timestamp_inc=9000 表示发送完这一访问单元后，RTP 时间戳前进 0.1 秒。 */
         ret = gb28181_send_rtp_packet(handle, ps_pack, ps_len, 9000, 1);
         printf("media demo: send PS over RTP ret=%d marker=1 timestamp_inc=9000\n", ret);
         gb28181_stop(handle);

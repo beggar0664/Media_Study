@@ -478,6 +478,16 @@ media demo: send PS over RTP ret=69 marker=1 timestamp_inc=9000
 | `DeviceInfo` | 查询设备基本信息，例如名称、厂商、型号、固件版本 |
 | `DeviceStatus` | 查询设备在线状态、编码状态、录像状态等 |
 
+把这三类 `MESSAGE` 放在一起看，会更清楚它们各自回答的问题：
+
+| 消息 | 回答的问题 | 代码入口 |
+|---|---|---|
+| `Catalog` | 你有哪些通道/资源 | `gb28181_build_message_catalog()` / `gb28181_build_message_catalog_response()` |
+| `DeviceInfo` | 你是谁、什么型号、什么固件 | `gb28181_build_message_device_info_query()` / `gb28181_build_message_device_info()` |
+| `DeviceStatus` | 你现在在线吗、能不能编码、在不在录像 | `gb28181_build_message_device_status_query()` / `gb28181_build_message_device_status()` |
+
+这三类消息的共同点是：外层都是 SIP `MESSAGE`，差别只是 XML 里的 `<CmdType>` 和响应字段不同。你可以把它们理解成同一套“控制面查询壳”，里面换了不同业务问题。
+
 从请求格式看，它们和 Catalog 很像，都是 `MESSAGE + XML`，只是 `CmdType` 不同：
 
 ```xml
@@ -537,6 +547,10 @@ media demo: send PS over RTP ret=69 marker=1 timestamp_inc=9000
 | `Firmware` | 固件版本 |
 | `Result` | 请求结果，通常为 `OK` |
 
+对应到代码里，这就是 `gb28181_build_message_device_info_query()` 发起查询，`gb28181_build_message_device_info()` 构造平台/设备返回的最小响应。
+
+如果你只记一件事，`DeviceInfo` 的重点就是“身份信息”。它不关心这路视频能不能播，而是关心这个设备本身是什么。
+
 `DeviceStatus` 响应可以理解成“这个设备现在怎么样”：
 
 | 字段 | 作用 |
@@ -545,6 +559,10 @@ media demo: send PS over RTP ret=69 marker=1 timestamp_inc=9000
 | `Status` | 状态概览，常见为 `OK` |
 | `Encode` | 编码状态，例如 H264 |
 | `Record` | 录像状态 |
+
+对应到代码里，这就是 `gb28181_build_message_device_status_query()` 发起查询，`gb28181_build_message_device_status()` 构造平台/设备返回的最小响应。
+
+如果你只记一件事，`DeviceStatus` 的重点就是“运行状态”。它关心的是设备现在是否在线、编码是否正常、录像是否打开。
 
 在当前 mock 里，平台返回的是固定响应，便于学习请求-响应配对。你在 Wireshark 里可以直接按 `CSeq` 和 `CmdType` 对照：先看查询 MESSAGE，再看平台回的 Response MESSAGE，最后确认设备回的 `200 OK` 没有被误当成新的请求。
 
@@ -648,6 +666,38 @@ sequenceDiagram
 
 这张图表达的是“先用 SIP/SDP 谈好媒体参数，再用 RTP 传媒体”。不要把 `INVITE + SDP` 理解成已经开始传视频，它只是建会话和协商参数。
 
+平台返回的 `200 OK + SDP` 可以看成对设备 `INVITE + SDP` 的镜像确认：
+
+```text
+Device INVITE SDP:
+m=video 10000 RTP/AVP 96
+a=sendonly
+a=rtpmap:96 H264/90000
+a=ssrc:0305419896
+
+Platform 200 OK SDP:
+m=video 30000 RTP/AVP 96
+a=recvonly
+a=rtpmap:96 H264/90000
+a=ssrc:0305419896
+```
+
+它告诉设备三件事：
+
+1. 平台愿意接收这路媒体。
+2. 平台监听的 RTP 端口是 `30000`。
+3. 双方都同意这条 RTP 流的编码语义是 `H264/90000`，`SSRC` 也要对上。
+
+所以 `200 OK + SDP` 不是多余的回执，它是在把“设备发往哪里”和“平台收在哪里”这两个方向真正闭合。
+
+这里还有一个动作层面的区别：
+
+- `ACK` 只是在 `INVITE` 成功后确认会话参数，它本身不带媒体数据。
+- `RTP` 才是真正开始传媒体。
+- `BYE` 是把会话收掉，不再继续发送媒体。
+
+所以你在代码里看到 `ACK` 后立刻 `send_demo_media_after_ack()`，这只是学习链路的顺序安排，不是说 ACK 自己携带媒体。
+
 可以拆成两条通道看：
 
 ```text
@@ -685,12 +735,61 @@ sequenceDiagram
 
 这张图是 INVITE/SDP 会话建立的细化版，和上一张总览图是同一件事，只是拆得更明确：**SIP 负责谈参数，RTP 负责发媒体**。
 
+把这条会话当成一个 dialog 来看，会更容易记：
+
+| 字段 | 作用 |
+|---|---|
+| `Call-ID` | 标识同一条会话对话，`INVITE / 200 OK / ACK / BYE` 都要保持一致 |
+| `From` / `To` | 表示会话两端，`tag` 用来区分同一对话中的两端标识 |
+| `CSeq` | 请求序号和方法名，`INVITE`、`ACK`、`BYE` 的方法不同，序号按会话推进 |
+| `Via` | 请求路径和本端地址，响应按原路径回去 |
+| `Contact` | 后续联系地址，后续消息应回到这个地址 |
+
+在当前学习代码里，这四个步骤是连在一起的：
+
+```text
+INVITE + SDP
+200 OK + SDP
+ACK
+RTP packets
+BYE
+200 OK
+```
+
+它们不是彼此独立的报文，而是一条会话的不同阶段。`INVITE` 建会，`200 OK` 表示对方接受参数，`ACK` 表示本端确认接受，`RTP` 开始传媒体，`BYE` 结束会话。
+
 读图时把两条通道分开：
 
 | 通道 | 作用 |
 |---|---|
 | SIP 通道 | 传 `INVITE / 200 OK / ACK / BYE` 这类控制报文 |
 | RTP 通道 | 真正传视频或音频包 |
+
+把 `INVITE -> 200 OK -> ACK -> BYE` 再拆成报文字段，可以这样对：
+
+| 报文 | 关键字段 | 学习重点 |
+|---|---|---|
+| `INVITE` | `Call-ID`、`CSeq: 2 INVITE`、`From`、`To`、`Contact`、SDP body | 发起媒体会话，声明自己想要的 RTP 参数 |
+| `200 OK + SDP` | `Call-ID`、`CSeq: 2 INVITE`、`From`、`To: ...;tag=mock`、`Contact`、SDP body | 平台接受会话，并给出接收侧媒体参数 |
+| `ACK` | `Call-ID`、`CSeq: 5 ACK`、`From`、`To: ...;tag=mock` | 设备确认会话参数，ACK 不再带 SDP |
+| `BYE` | `Call-ID`、`CSeq: 6 BYE`、`From`、`To: ...;tag=mock` | 结束对话 |
+
+这里最该盯住的是 `Call-ID` 和 `To tag`：
+
+- `Call-ID` 在这一整条会话里保持一致，表示是同一个 dialog。
+- `To` 后面的 `tag=mock` 是平台在 `200 OK` 里加上的，对话确认后，后续 `ACK` 和 `BYE` 也要带着这个 `tag`。
+- `CSeq` 的数字在同一对话里递增，但方法名会变；`INVITE`、`ACK`、`BYE` 不同。
+- `Contact` 告诉对端后续联系谁，但在这套学习代码里主要是让你理解“后续路由到哪里”。
+
+在代码里这三个请求分别由下面的函数构造：
+
+```text
+build_invite_request()
+build_ack_request()
+build_bye_request()
+```
+
+它们都复用了同一个 `stream_id / domain / local_ip / local_sip_port / local_id`，只是方法名、`CSeq` 和部分头字段不同。这样做的目的，是让你看到：同一条 SIP 对话不是每个报文都从零开始，而是沿着同一个会话上下文推进。
 
 再看 SDP 参数：
 
@@ -921,6 +1020,74 @@ gb28181_send_rtp_packet()
 | `a=sendonly` | 设备侧发送 RTP，平台侧接收 |
 
 所以 `INVITE + SDP` 不是在发视频，而是在谈视频会话参数；真正的视频数据还是后面的 RTP 包。
+
+用当前抓包和 mock server 日志可以这样对应：
+
+```text
+SDP:
+m=video 30000 RTP/AVP 96
+a=recvonly
+a=rtpmap:96 H264/90000
+a=ssrc:0305419896
+
+RTP log:
+version=2 pt=96 marker=1 seq=55326 timestamp=1192404170 ssrc=0x12345678 payload_len=69
+payload head: 00 00 01 BA ...
+```
+
+| SDP 约定 | RTP/UDP 执行结果 | 说明 |
+|---|---|---|
+| `m=video 30000 RTP/AVP 96` | UDP 目的端口是 `30000` | 媒体发到平台协商出来的 RTP 端口 |
+| `m=video 30000 RTP/AVP 96` | RTP `pt=96` | RTP 头里的 payload type 要和 SDP 对上 |
+| `a=rtpmap:96 H264/90000` | `pt=96` 按 H.264、90000 Hz 理解 | `96` 是动态类型，必须靠 SDP 解释 |
+| `a=rtpmap:96 H264/90000` | `timestamp` 按 90000 Hz 换算 | 示例里 `timestamp_inc=9000` 表示 0.1 秒 |
+| `a=ssrc:0305419896` | `ssrc=0x12345678` | `0x12345678` 十进制是 `305419896`，补 10 位就是 `0305419896` |
+| `a=recvonly` | mock server 监听并接收 `udp/30000` | 平台侧只收媒体，设备侧发送媒体 |
+
+这里容易误解的一点是：SDP 里写 `H264/90000`，但 RTP payload 开头却是 `00 00 01 BA`。这不矛盾。当前国标学习链路是 `PS over RTP`：
+
+```text
+RTP header: pt=96 / timestamp / ssrc
+RTP payload: PS pack 00 00 01 BA
+PS 内部: PES 00 00 01 E0
+PES payload: H.264 Annex-B NALU 00 00 00 01 67/68/65
+```
+
+所以 SDP 描述的是“这路媒体最终编码语义是 H.264，RTP 时钟是 90000”，而 RTP payload 里实际承载的是 PS 容器数据。接收端要先拆 RTP，再拆 PS/PES，最后才看到 H.264 NALU。
+
+#### RTP timestamp 和 PES PTS 怎么对应
+
+当前演示代码里有两个 9000：
+
+```c
+gb28181_build_ps_pack_h264(..., 9000, 9000, ...);  // 写入 PES PTS/DTS
+gb28181_send_rtp_packet(..., 9000, 1);             // RTP timestamp_inc
+```
+
+它们都基于 SDP 里的 `H264/90000`：
+
+```text
+9000 / 90000 = 0.1 秒
+```
+
+但它们属于不同层：
+
+| 字段 | 所在层 | 作用 |
+|---|---|---|
+| `PES PTS` | PS/PES 容器层 | 告诉解复用/播放侧这个访问单元的播放时间 |
+| `RTP timestamp` | RTP 传输层 | 帮助接收端按媒体时间重排、同步、抖动缓冲 |
+| `timestamp_inc` | 发送接口参数 | 告诉 RTP 库发完当前包后，下一个 RTP timestamp 增加多少 |
+
+所以 `PES PTS` 和 `RTP timestamp` 可以使用同一个 90kHz 时间基，但不能混成一个字段。简单理解：RTP timestamp 服务于网络传输和同步，PES PTS 服务于容器解复用后的播放时间。
+
+mock server 收包时会打印：
+
+```text
+PES detail: stream_id=0xE0 pes_len=51 flags=0x80 header_len=5
+PTS detail: bytes=21 00 01 46 51 value=9000 (90kHz)
+```
+
+这里的 `value=9000` 就对应 `gb28181_build_ps_pack_h264(..., 9000, 9000, ...)` 写进去的 PES PTS。RTP 日志里的 `timestamp=...` 是 RTP 库生成的绝对 RTP timestamp，通常有随机初值；更适合观察的是相邻包之间的增量是否按 `timestamp_inc=9000` 前进。
 
 ### 8.2 为什么要先看 SDP，再看 RTP
 如果只看 RTP 包头，不先看 SDP，很多字段的语义是不完整的。
@@ -1162,6 +1329,56 @@ sequenceDiagram
 3. 再看 `sending one PS-over-RTP packet`，确认整个 PS pack 被当成一个 RTP payload。
 4. 再看 `sending fragmented PS-over-RTP packets: max_payload=24`，确认同一个 PS 被拆成多个 RTP 包。
 5. 最后看 `sending normal PS-over-RTP packets: max_payload=1200`，确认更接近工程尺寸的发送方式。
+
+#### 接收端怎么反向拆层看
+
+现在 `gb28181_sip_mock_server.exe` 也会监听 `udp/30000`，它收到 RTP 后不会只停留在“这是一个 UDP 包”的层面，而是继续往下扫载荷：
+
+```text
+===== RTP RX udp/30000 =====
+version=2 pt=96 marker=1 seq=... timestamp=... ssrc=0x12345678 payload_len=...
+payload head: 00 00 01 BA ...
+payload type guess: PS pack header 00 00 01 BA
+PS scan: pack_start=0 video_pes=14 annexb_nalu=24
+PES detail: stream_id=0xE0 pes_len=51 flags=0x80 header_len=5
+NALU detail: first_byte=0x67 h264_type=7
+```
+
+这几行日志的意思是：
+
+| 字段 | 说明 |
+|---|---|
+| `version / pt / marker / seq / timestamp / ssrc` | 这是 RTP 头，描述传输和重组信息 |
+| `payload head` | RTP 负载的前几个字节，用来判断里面装的是 PS、裸 H.264，还是别的格式 |
+| `pack_start=0` | 在 RTP payload 的开头找到了 `00 00 01 BA`，说明这是 PS pack |
+| `video_pes=14` | 在 PS 里找到了 `00 00 01 E0`，说明后面跟的是视频 PES |
+| `annexb_nalu=24` | 在 PES 负载里找到了 Annex-B 起始码 `00 00 00 01` |
+| `stream_id=0xE0` | 视频 PES 的 stream_id，表示视频流 |
+| `pes_len` | PES 包长度。`0` 代表长度不填，由上层边界决定；非 0 表示已写出长度字段 |
+| `flags=0x80` | PES 头标志，常见于“只带 PTS”的最小写法 |
+| `header_len=5` | PES header 长度。`5` 通常表示只写了一个 5 字节 PTS |
+| `h264_type=7` | Annex-B NALU 头的低 5 位，`7` 表示 SPS，`8` 是 PPS，`5` 是 IDR |
+
+如果你用 WinHex 看同一包，可以按下面顺序定位：
+
+```text
+00 00 01 BA
+  -> PS pack header
+
+00 00 01 E0
+  -> 视频 PES header
+
+80 80 05
+  -> PES 头的标志位和 header 长度
+
+PTS 5 字节
+  -> 播放时间戳
+
+00 00 00 01 67 / 68 / 65
+  -> H.264 SPS / PPS / IDR NALU
+```
+
+这一步的学习重点不是背字段，而是建立“从外到内”的拆层顺序：先看 RTP 头，再看 PS pack，再看 PES，最后才看 NALU。这样你在排查灰屏、跳帧、GOP 问题时，能更快判断问题落在传输层、容器层，还是编解码层。
 
 抓包时可以直接把程序输出和 Wireshark 的 `udp.port == 10000` 对照起来：输出负责告诉你“这一轮发的是什么”，Wireshark 负责告诉你“实际上包里长什么样”。
 

@@ -266,9 +266,23 @@ int gb28181_build_register(const gb28181_config_t *config, char *buf, int buf_si
         config->username, cfg_local_ip(config), cfg_local_sip_port(config));
 }
 
+/*
+function 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。 
+param config: 模块配置。
+param buf: 缓冲区。
+param buf_size: 缓冲区大小。
+param ssrc: SSRC 值, 同步源 ID。
+*/
 int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, const char *ssrc)
 {
-    /* 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。 */
+    /*
+     * 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。
+     * 这些字段要和后续 RTP 包对应起来看：
+     *   m=video <port> RTP/AVP <pt>  -> UDP 目的端口和 RTP payload type
+     *   a=rtpmap:<pt> H264/90000     -> pt 的编码语义和 RTP timestamp 时钟
+     *   a=ssrc:<ssrc>                -> RTP header 里的 SSRC
+     * 注意：GB28181 常见实际负载是 PS over RTP，SDP 说明编码是 H.264，RTP payload 里可以先看到 PS 头 00 00 01 BA。
+     */
     if (!config || !buf || buf_size <= 0 || !ssrc) {
         return -1;
     }
@@ -450,6 +464,11 @@ int gb28181_build_message_catalog_response(const gb28181_config_t *config, int c
         return -1;
     }
 
+    /*
+     * 这里返回的是“学习用固定目录”，不是动态设备树。
+     * 先保留两条通道：一条在线、一条离线，方便后续在 client 里练习
+     * Catalog 解析、在线通道筛选和 INVITE 目标选择。
+     */
     body_len = snprintf(body, sizeof(body),
         "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
         "<Response>\r\n"
@@ -459,7 +478,6 @@ int gb28181_build_message_catalog_response(const gb28181_config_t *config, int c
         "<SumNum>2</SumNum>\r\n"
         "<DeviceList Num=\"2\">\r\n"
         "<Item>\r\n"
-        "<!-- 最小目录条目：固定一条通道记录，便于学习 Response 结构。 -->\r\n"
         "<DeviceID>34020000001320000001</DeviceID>\r\n"
         "<Name>Camera-01</Name>\r\n"
         "<Manufacturer>MockVendor</Manufacturer>\r\n"
