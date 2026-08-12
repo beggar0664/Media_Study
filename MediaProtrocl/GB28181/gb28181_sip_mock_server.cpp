@@ -185,13 +185,18 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
     } else if (payload_size > 0 && (data[payload_offset] & 0x1F) == 5) {
         printf("payload type guess: raw H.264 IDR NALU\n");
     } else if (payload_size >= 2 && (data[payload_offset] & 0x1F) == 28) {
+        unsigned int fu_start = (unsigned int)((data[payload_offset + 1] >> 7) & 0x01);
+        unsigned int fu_end = (unsigned int)((data[payload_offset + 1] >> 6) & 0x01);
+        unsigned int fu_type = (unsigned int)(data[payload_offset + 1] & 0x1F);
+        const char *fu_role = fu_start ? "first" : (fu_end ? "last" : "middle");
         printf("payload type guess: H.264 FU-A\n");
-        printf("FU-A detail: indicator=0x%02X header=0x%02X S=%u E=%u type=%u\n",
+        printf("FU-A detail: indicator=0x%02X header=0x%02X S=%u E=%u type=%u role=%s\n",
                data[payload_offset],
                data[payload_offset + 1],
-               (unsigned)((data[payload_offset + 1] >> 7) & 0x01),
-               (unsigned)((data[payload_offset + 1] >> 6) & 0x01),
-               (unsigned)(data[payload_offset + 1] & 0x1F));
+               fu_start,
+               fu_end,
+               fu_type,
+               fu_role);
     } else {
         printf("payload type guess: unknown/demo payload\n");
     }

@@ -74,6 +74,7 @@ int main(void)
     cfg.payload_type = 96;
     cfg.ssrc = 0x12345678;
 
+    /* 构造一个较大的裸 IDR NALU，专门用来触发 H.264 FU-A 分片。 */
     large_idr_nalu[0] = 0x65;
     for (normal_h264_len = 1; normal_h264_len < (int)sizeof(large_idr_nalu); ++normal_h264_len) {
         large_idr_nalu[normal_h264_len] = (unsigned char)(0x80 + (normal_h264_len & 0x3F));

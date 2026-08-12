@@ -1372,7 +1372,17 @@ sending H.264 FU-A fragmented IDR: max_payload=24
 
 这一步是为了学习 H.264 RTP 负载格式。国标 GB28181 工程里更常见的是 `PS over RTP`，也就是先把 H.264/H.265 放进 PS/PES，再把 PS 数据切进 RTP。两者都可能出现在学习中，但层次不同：FU-A 是编码负载层的 RTP 分片，PS over RTP 是容器负载被 RTP 承载。
 
-你现在可以这样抓 FU-A：如果收到 `FU-A detail: indicator=0x7C header=0x85 S=1 E=0 type=5`，说明是首片；如果 `S=0 E=0`，说明是中间片；如果 `S=0 E=1`，说明是末片。接收端还不能只看一个包，要把同一 `timestamp` 下的多片拼起来，才能恢复出原始 IDR NALU。
+你现在可以这样抓 FU-A：如果收到 `FU-A detail: indicator=0x7C header=0x85 S=1 E=0 type=5 role=first`，说明是首片；如果 `role=middle`，说明是中间片；如果 `role=last`，说明是末片。接收端还不能只看一个包，要把同一 `timestamp` 下的多片拼起来，才能恢复出原始 IDR NALU。
+
+FU-A 里 `S/E` 和 RTP 里的 `marker` 要一起看：
+
+| FU-A 角色 | FU header | RTP marker | 含义 |
+|---|---|---|---|
+| 首片 | `S=1 E=0` | `0` | 这个 NALU 开始了，但还没结束 |
+| 中间片 | `S=0 E=0` | `0` | 继续搬运同一个 NALU 的中间数据 |
+| 末片 | `S=0 E=1` | `1` | 这个 NALU 的最后一片，媒体单元到边界 |
+
+所以 FU-A 的重组判断不是只靠一个字段：`seq` 用于排序和丢包判断，`timestamp` 用于确认这些分片属于同一媒体时刻，`S/E` 用于确认这个 NALU 的起止，`marker` 用于标记访问单元边界。
 
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
