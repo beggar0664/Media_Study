@@ -1205,6 +1205,10 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
     /*
      * H.264 FU-A 标准分片：只处理裸 NALU，不处理 Annex-B start code。
      * RTP payload = FU indicator(0x7C with original NRI) + FU header(S/E/type) + NALU slice。
+     * 其中：
+     *   FU indicator  -> 0x7C | 原始 NALU 的 NRI
+     *   FU header     -> S/E 位 + 原始 NALU type
+     *   S=1 表示首片，E=1 表示末片，中间片两者都为 0
      */
     unsigned char packet[1500];
     unsigned char nalu_header;

@@ -1337,6 +1337,25 @@ seq=31730 timestamp=1142747095 marker=1 payload_len=69
 | `05` | FU header，中间片，仍然属于原始 IDR NALU |
 | `45` | FU header，`E=1` 表示末片 |
 
+再拆开一点看：
+
+```text
+7C = F | NRI | 28
+     ^   ^     ^
+     |   |     +-- NAL unit type = 28，说明这是 FU-A
+     |   +-------- 原始 NALU 的 NRI
+     +------------ forbidden_zero_bit，正常应为 0
+
+85 = S | E | R | original_type
+     ^   ^   ^   ^
+     |   |   |   +-- 原始 NALU type
+     |   |   +------ 保留位，通常为 0
+     |   +---------- End 标志，末片置 1
+     +-------------- Start 标志，首片置 1
+```
+
+所以 FU-A 不是简单“切两片”，而是把原始 NALU 的类型信息拆成 `FU indicator + FU header`，再把原始 NALU 数据一段段搬过去。接收端只要看到 `7C`，就知道后面不再是完整 NALU，而是需要按 `S/E` 位重组。
+
 抓包时可以这样区分三种 RTP payload：
 
 | RTP payload 开头 | 说明 |
@@ -1352,6 +1371,8 @@ sending H.264 FU-A fragmented IDR: max_payload=24
 ```
 
 这一步是为了学习 H.264 RTP 负载格式。国标 GB28181 工程里更常见的是 `PS over RTP`，也就是先把 H.264/H.265 放进 PS/PES，再把 PS 数据切进 RTP。两者都可能出现在学习中，但层次不同：FU-A 是编码负载层的 RTP 分片，PS over RTP 是容器负载被 RTP 承载。
+
+你现在可以这样抓 FU-A：如果收到 `FU-A detail: indicator=0x7C header=0x85 S=1 E=0 type=5`，说明是首片；如果 `S=0 E=0`，说明是中间片；如果 `S=0 E=1`，说明是末片。接收端还不能只看一个包，要把同一 `timestamp` 下的多片拼起来，才能恢复出原始 IDR NALU。
 
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
