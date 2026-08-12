@@ -1384,6 +1384,31 @@ FU-A 里 `S/E` 和 RTP 里的 `marker` 要一起看：
 
 所以 FU-A 的重组判断不是只靠一个字段：`seq` 用于排序和丢包判断，`timestamp` 用于确认这些分片属于同一媒体时刻，`S/E` 用于确认这个 NALU 的起止，`marker` 用于标记访问单元边界。
 
+这次 `GB28181_TEST12.pcapng` 对应的 mock server 日志已经能看到完整 FU-A 形态：
+
+```text
+seq=7913 timestamp=2919173196 marker=0 payload head: 7C 85 ...  -> 首片，S=1 E=0 type=5
+seq=7914 timestamp=2919173196 marker=0 payload head: 7C 05 ...  -> 中间片，S=0 E=0 type=5
+seq=7915 timestamp=2919173196 marker=0 payload head: 7C 05 ...  -> 中间片，S=0 E=0 type=5
+...
+seq=7924 timestamp=2919173196 marker=1 payload head: 7C 45 ...  -> 末片，S=0 E=1 type=5
+```
+
+这组包有几个关键特征：
+
+| 观察点 | 说明 |
+|---|---|
+| `seq=7913..7924` 连续递增 | FU-A 分片按 RTP 序号排序，丢一个序号就代表 NALU 不完整 |
+| `timestamp` 全部相同 | 这些分片属于同一个媒体时刻，也就是同一个被拆开的 IDR NALU |
+| 首片 `7C 85` | `7C` 表示 FU-A，`85` 表示 Start=1、原始 type=5 |
+| 中间片 `7C 05` | `05` 表示 Start=0、End=0、原始 type=5 |
+| 末片 `7C 45` | `45` 表示 End=1、原始 type=5 |
+| 只有末片 `marker=1` | 表示这个访问单元到边界了，可以完成重组和投递 |
+
+所以这次抓包已经验证了：FU-A 不是把每一片都当成独立帧，而是把一个较大的 IDR NALU 拆成多片；接收端要按 `seq` 拼片，用 `timestamp` 归组，用 `S/E` 找 NALU 起止，用 `marker` 确认访问单元边界。
+
+如果日志里只有 `payload type guess: H.264 FU-A`，还没有 `FU-A detail: ... role=first/middle/last`，说明运行的还是旧二进制。重新编译后再运行 mock server，就会直接打印分片角色。
+
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
 ```text
