@@ -100,6 +100,114 @@ static int find_bytes(const unsigned char *data, int size, const unsigned char *
     return -1;
 }
 
+typedef struct {
+    int active;
+    uint32_t timestamp;
+    unsigned int ssrc;
+    unsigned char nalu_header;
+    unsigned char buffer[4096];
+    int length;
+} h264_fu_a_reassembly_t;
+
+static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->active = 0;
+    ctx->timestamp = 0;
+    ctx->ssrc = 0;
+    ctx->nalu_header = 0;
+    ctx->length = 0;
+}
+
+static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
+{
+    int i;
+    int dump_len;
+
+    if (!ctx || ctx->length <= 0) {
+        return;
+    }
+
+    dump_len = ctx->length < 16 ? ctx->length : 16;
+    printf("FU-A reassembled NALU: len=%d header=0x%02X timestamp=%u ssrc=0x%08X head:",
+           ctx->length,
+           ctx->nalu_header,
+           ctx->timestamp,
+           ctx->ssrc);
+    for (i = 0; i < dump_len; ++i) {
+        printf(" %02X", ctx->buffer[i]);
+    }
+    printf("\n");
+}
+
+static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
+                                          uint32_t timestamp,
+                                          uint32_t ssrc,
+                                          const unsigned char *payload,
+                                          int payload_size,
+                                          unsigned int fu_start,
+                                          unsigned int fu_end,
+                                          unsigned int fu_type)
+{
+    unsigned char nalu_header;
+    int data_len;
+
+    if (!ctx || !payload || payload_size < 2) {
+        return;
+    }
+
+    nalu_header = (unsigned char)((payload[0] & 0xE0) | (fu_type & 0x1F));
+    if (fu_start) {
+        ctx->active = 1;
+        ctx->timestamp = timestamp;
+        ctx->ssrc = ssrc;
+        ctx->nalu_header = nalu_header;
+        ctx->length = 0;
+        if (ctx->length < (int)sizeof(ctx->buffer)) {
+            ctx->buffer[ctx->length++] = nalu_header;
+        }
+        if (payload_size > 2) {
+            data_len = payload_size - 2;
+            if (ctx->length + data_len > (int)sizeof(ctx->buffer)) {
+                data_len = (int)sizeof(ctx->buffer) - ctx->length;
+            }
+            if (data_len > 0) {
+                memcpy(ctx->buffer + ctx->length, payload + 2, (size_t)data_len);
+                ctx->length += data_len;
+            }
+        }
+        printf("FU-A reassembly start: timestamp=%u ssrc=0x%08X header=0x%02X\n",
+               ctx->timestamp, ctx->ssrc, ctx->nalu_header);
+        if (fu_end) {
+            fu_a_reassembly_print_nalu(ctx);
+            fu_a_reassembly_reset(ctx);
+        }
+        return;
+    }
+
+    if (!ctx->active || ctx->timestamp != timestamp || ctx->ssrc != ssrc) {
+        return;
+    }
+
+    if (payload_size > 2) {
+        data_len = payload_size - 2;
+        if (ctx->length + data_len > (int)sizeof(ctx->buffer)) {
+            data_len = (int)sizeof(ctx->buffer) - ctx->length;
+        }
+        if (data_len > 0) {
+            memcpy(ctx->buffer + ctx->length, payload + 2, (size_t)data_len);
+            ctx->length += data_len;
+        }
+    }
+
+    if (fu_end) {
+        fu_a_reassembly_print_nalu(ctx);
+        fu_a_reassembly_reset(ctx);
+    }
+}
+
 static void print_ps_payload_summary(const unsigned char *payload, int payload_size)
 {
     const unsigned char ps_pack_start[] = {0x00, 0x00, 0x01, 0xBA};
@@ -140,6 +248,7 @@ static void print_ps_payload_summary(const unsigned char *payload, int payload_s
 
 static void print_rtp_packet_summary(const unsigned char *data, int size)
 {
+    static h264_fu_a_reassembly_t fu_a_ctx;
     unsigned int version;
     unsigned int marker;
     unsigned int payload_type;
@@ -197,6 +306,14 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
                fu_end,
                fu_type,
                fu_role);
+        fu_a_reassembly_handle_packet(&fu_a_ctx,
+                                      timestamp,
+                                      ssrc,
+                                      data + payload_offset,
+                                      payload_size,
+                                      fu_start,
+                                      fu_end,
+                                      fu_type);
     } else {
         printf("payload type guess: unknown/demo payload\n");
     }

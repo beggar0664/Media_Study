@@ -1409,6 +1409,19 @@ seq=7924 timestamp=2919173196 marker=1 payload head: 7C 45 ...  -> 末片，S=0 
 
 如果日志里只有 `payload type guess: H.264 FU-A`，还没有 `FU-A detail: ... role=first/middle/last`，说明运行的还是旧二进制。重新编译后再运行 mock server，就会直接打印分片角色。
 
+当前 mock receiver 已经可以做一个最小的 FU-A 重组验证：它不会解码图像，只会把同一 `timestamp` 下的 FU-A 分片拼回原始 NALU 字节流，并打印重组结果。这样你就能确认 `7C 85 -> 7C 05 -> 7C 45` 最后能还原回以 `65` 开头的原始 NALU。
+
+重组后的检查重点是：
+
+| 检查项 | 说明 |
+|---|---|
+| `FU-A reassembly start` | 看到首片时开启缓存 |
+| `FU-A reassembled NALU` | 看到末片时输出重组完成的 NALU |
+| `len=` | 重组后的总长度，应该等于各片有效负载之和加上 1 字节原始 NALU 头 |
+| `header=0x65` | 表示重组回来的还是 IDR NALU |
+
+这个阶段还不需要解码器。只要能证明“分片 -> 重组 -> 原始 NALU 还原”成立，就已经完成了 FU-A 的下一层学习。
+
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
 ```text
