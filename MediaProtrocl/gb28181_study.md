@@ -1422,6 +1422,22 @@ seq=7924 timestamp=2919173196 marker=1 payload head: 7C 45 ...  -> 末片，S=0 
 
 这个阶段还不需要解码器。只要能证明“分片 -> 重组 -> 原始 NALU 还原”成立，就已经完成了 FU-A 的下一层学习。
 
+重新编译并运行新版 mock server 后，FU-A 重组验证已经通过，关键日志如下：
+
+```text
+seq=31854 timestamp=2532218597 marker=0 payload head: 7C 85 ...
+FU-A detail: indicator=0x7C header=0x85 S=1 E=0 type=5 role=first
+FU-A reassembly start: timestamp=2532218597 ssrc=0x12345678 header=0x65
+
+...
+
+seq=31865 timestamp=2532218597 marker=1 payload head: 7C 45 ...
+FU-A detail: indicator=0x7C header=0x45 S=0 E=1 type=5 role=last
+FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 head: 65 81 82 83 84 85 86 87 88 89 8A 8B 8C 8D 8E 8F
+```
+
+这说明接收端已经把一组 FU-A 分片还原回原始裸 NALU：首字节恢复成 `0x65`，长度恢复成 `256`。这里仍然没有解码图像，只是完成了 H.264 RTP 负载层的重组验证。
+
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
 ```text
