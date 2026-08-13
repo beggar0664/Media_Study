@@ -1205,6 +1205,14 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
     /*
      * H.264 FU-A 标准分片。
      *
+     * 参数解释：
+     *   handle           -> 已启动的 RTP 会话句柄，函数通过它发包。
+     *   nalu             -> 裸 H.264 NALU 起始地址，必须包含原始 NALU 头字节。
+     *   nalu_size        -> nalu 的总字节数。
+     *   max_payload_size -> 单个 RTP payload 允许的最大大小，
+     *                       其中前 2 字节要留给 FU-A 头。
+     *   timestamp_inc    -> 这一整个 NALU 完成后，RTP timestamp 前进的步长。
+     *
      * 输入必须是裸 NALU，不带 Annex-B start code。
      * 例如：
      *   65 xx xx ...   -> 一个 IDR NALU
