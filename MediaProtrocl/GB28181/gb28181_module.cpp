@@ -1203,12 +1203,27 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
                            unsigned int timestamp_inc)
 {
     /*
-     * H.264 FU-A 标准分片：只处理裸 NALU，不处理 Annex-B start code。
-     * RTP payload = FU indicator(0x7C with original NRI) + FU header(S/E/type) + NALU slice。
+     * H.264 FU-A 标准分片。
+     *
+     * 输入必须是裸 NALU，不带 Annex-B start code。
+     * 例如：
+     *   65 xx xx ...   -> 一个 IDR NALU
+     *   67 xx xx ...   -> 一个 SPS NALU
+     *
+     * FU-A 的 RTP payload 结构是：
+     *   [FU indicator][FU header][NALU slice...]
+     *
      * 其中：
-     *   FU indicator  -> 0x7C | 原始 NALU 的 NRI
-     *   FU header     -> S/E 位 + 原始 NALU type
-     *   S=1 表示首片，E=1 表示末片，中间片两者都为 0
+     *   FU indicator = 原始 NALU 的 NRI | 28
+     *   FU header    = S/E 位 + 原始 NALU type
+     *
+     * 这里的 S/E 位含义：
+     *   S=1 -> 首片
+     *   S=0 -> 非首片
+     *   E=1 -> 末片
+     *   E=0 -> 非末片
+     *
+     * 这个函数只负责“拆分并发送”，不负责解码。
      */
     unsigned char packet[1500];
     unsigned char nalu_header;
@@ -1227,16 +1242,22 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
     nalu_header = nalu[0];
     nalu_type = (unsigned char)(nalu_header & 0x1F);
     fu_indicator = (unsigned char)((nalu_header & 0xE0) | 28);
+    /* 跳过原始 NALU 头字节，后面只发送真正的 NALU 负载。 */
     offset = 1;
 
     while (offset < nalu_size) {
+        /* 每个 RTP 包最多容纳 max_payload_size 字节，其中 2 字节留给 FU-A 头。 */
         int remaining = nalu_size - offset;
         int chunk = remaining > (max_payload_size - 2) ? (max_payload_size - 2) : remaining;
+        /* 第一片就是 offset 刚进入负载区域的那一包。 */
         int is_first = (offset == 1);
+        /* 最后一片就是当前 chunk 已经覆盖到原始 NALU 末尾的那一包。 */
         int is_last = (offset + chunk >= nalu_size);
         int ret;
 
+        /* FU indicator 保留原始 NALU 的 NRI，只把 type 改成 28。 */
         packet[0] = fu_indicator;
+        /* FU header 先写入原始 NALU type，再按首片/末片位置补 S/E 位。 */
         packet[1] = nalu_type;
         if (is_first) {
             packet[1] = (unsigned char)(packet[1] | 0x80);
@@ -1244,8 +1265,10 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
         if (is_last) {
             packet[1] = (unsigned char)(packet[1] | 0x40);
         }
+        /* 后面跟的就是当前片段的原始 NALU 数据，不再带原始 NALU 头字节。 */
         memcpy(packet + 2, nalu + offset, (size_t)chunk);
 
+        /* 只有最后一片才让 timestamp_inc 生效，并把 marker 置 1。 */
         ret = gb28181_send_rtp_packet(handle, packet, chunk + 2, is_last ? timestamp_inc : 0, is_last ? 1 : 0);
         if (ret < 0) {
             return ret;
