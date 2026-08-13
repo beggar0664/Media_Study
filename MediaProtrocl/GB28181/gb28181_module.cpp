@@ -1211,6 +1211,8 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
      *   nalu_size        -> nalu 的总字节数。
      *   max_payload_size -> 单个 RTP payload 允许的最大大小，
      *                       其中前 2 字节要留给 FU-A 头。
+     *                       工程里常见会取 1200~1300 左右；
+     *                       本示例用 24 是为了强制看分片，用 1200 是为了接近常见工程值。
      *   timestamp_inc    -> 这一整个 NALU 完成后，RTP timestamp 前进的步长。
      *
      * 输入必须是裸 NALU，不带 Annex-B start code。
