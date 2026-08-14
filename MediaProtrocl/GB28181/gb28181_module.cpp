@@ -1149,7 +1149,18 @@ int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out)
 
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker)
 {
-    /* 发送单个 RTP 包；timestamp_inc 是时间戳增量，不是绝对值。 */
+    /*
+     * 最底层的 RTP 单包发送原语。
+     *
+     * 这个函数不理解 payload 里面装的是什么，只负责把一段字节发成一个 RTP 包。
+     * 上层只需要决定三件事：
+     *   1. payload 内容是什么
+     *   2. 本包的 marker 要不要置 1
+     *   3. 这一包发送后，RTP timestamp 应该前进多少
+     *
+     * 这里的 timestamp_inc 不是绝对时间戳，而是“相对增量”。
+     * marker 通常只在某个媒体单元的最后一包置 1。
+     */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     int status;
 
@@ -1172,7 +1183,19 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
                                         int max_payload_size,
                                         unsigned int timestamp_inc)
 {
-    /* 简单按字节切片：前面分片 marker=0，最后一片 marker=1。 */
+    /*
+     * 通用的 payload 字节切片发送。
+     *
+     * 这个函数不关心 payload 是 PS、ES 还是别的容器/数据，只做机械切片：
+     *   - 前面的分片 marker=0
+     *   - 最后一片 marker=1
+     *   - 只有最后一片才推进 timestamp_inc
+     *
+     * 所以它适合“已经有一个完整 payload，需要按大小拆进多个 RTP 包”的场景。
+     * 例如：PS pack 太大时，可以先直接按字节切给 RTP。
+     *
+     * 它不做 H.264 FU-A 那种语义化分片，也不重写 payload 内容本身。
+     */
     const unsigned char *data = (const unsigned char *)payload;
     int offset = 0;
     int total_sent = 0;
@@ -1214,6 +1237,15 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
      *                       工程里常见会取 1200~1300 左右；
      *                       本示例用 24 是为了强制看分片，用 1200 是为了接近常见工程值。
      *   timestamp_inc    -> 这一整个 NALU 完成后，RTP timestamp 前进的步长。
+     *
+     * 这个函数与 gb28181_send_rtp_payload_fragmented() 的区别在于：
+     *   - 后者只会切 payload，不理解内容
+     *   - 这里会理解 H.264 NALU，并写出 FU-A 头
+     *
+     * 也就是说：
+     *   gb28181_send_rtp_packet()             -> 单包发送原语
+     *   gb28181_send_rtp_payload_fragmented() -> 通用字节切片
+     *   gb28181_send_h264_fu_a()              -> H.264 语义分片
      *
      * 输入必须是裸 NALU，不带 Annex-B start code。
      * 例如：
