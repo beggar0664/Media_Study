@@ -1186,6 +1186,11 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
     /*
      * 通用的 payload 字节切片发送。
      *
+     * 和 H.264 语义分片的区别：
+     *   - 这里不理解 payload 的内容，只按字节大小切块
+     *   - 不会重写 payload 的内部结构
+     *   - 适合 PS pack 这类“已经封装好”的数据继续切 RTP
+     *
      * 这个函数不关心 payload 是 PS、ES 还是别的容器/数据，只做机械切片：
      *   - 前面的分片 marker=0
      *   - 最后一片 marker=1
@@ -1227,6 +1232,12 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
 {
     /*
      * H.264 FU-A 标准分片。
+     *
+     * 和通用字节切片的区别：
+     *   - 这里理解输入是 H.264 裸 NALU
+     *   - 会写入 FU indicator / FU header
+     *   - 会根据首片/末片设置 S/E 位
+     *   - 适合裸 H.264 over RTP 的标准分片
      *
      * 参数解释：
      *   handle           -> 已启动的 RTP 会话句柄，函数通过它发包。
