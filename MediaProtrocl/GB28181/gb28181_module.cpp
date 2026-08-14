@@ -1189,7 +1189,7 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
      * 和 H.264 语义分片的区别：
      *   - 这里不理解 payload 的内容，只按字节大小切块
      *   - 不会重写 payload 的内部结构
-     *   - 适合 PS pack 这类“已经封装好”的数据继续切 RTP
+     *   - 在当前仓库里，主要用于 PS pack 继续切成 RTP，也就是 PS over RTP
      *
      * 这个函数不关心 payload 是 PS、ES 还是别的容器/数据，只做机械切片：
      *   - 前面的分片 marker=0

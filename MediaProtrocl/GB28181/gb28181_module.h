@@ -143,7 +143,7 @@ int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out);
 
 /* 直接发送一包 RTP payload。 */
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker);
-/* 按 max_payload_size 做简单分片发送。 */
+/* 按 max_payload_size 做简单分片发送，当前主要用于 PS over RTP。 */
 int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
                                         const void *payload,
                                         int payload_size,
