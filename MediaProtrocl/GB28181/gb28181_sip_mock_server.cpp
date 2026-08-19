@@ -13,12 +13,14 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+#include <windows.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -144,6 +146,18 @@ typedef void (*fu_a_nalu_output_cb)(const unsigned char *nalu,
                                    void *user_data);
 
 #define FU_A_REORDER_WINDOW_SIZE 8
+#define FU_A_REASSEMBLY_TIMEOUT_MS 2000
+
+static unsigned long long fu_a_now_ms(void)
+{
+#ifdef _WIN32
+    return (unsigned long long)GetTickCount();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000ULL + (unsigned long long)(ts.tv_nsec / 1000000);
+#endif
+}
 
 typedef struct {
     int active;
@@ -163,6 +177,7 @@ typedef struct {
      */
     unsigned int last_ooo_seq;
     int last_ooo_seen;
+    unsigned long long start_tick;
 } h264_fu_a_reassembly_t;
 
 static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
@@ -179,6 +194,7 @@ static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
     ctx->length = 0;
     ctx->last_ooo_seq = 0;
     ctx->last_ooo_seen = 0;
+    ctx->start_tick = 0;
 }
 
 static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
@@ -248,6 +264,7 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         ctx->ssrc = ssrc;
         ctx->expected_seq = (seq + 1) & 0xFFFF;
         ctx->pending_fragments = 1;
+        ctx->start_tick = fu_a_now_ms();
         ctx->nalu_header = nalu_header;
         ctx->length = 0;
         if (ctx->length < (int)sizeof(ctx->buffer)) {
@@ -277,6 +294,15 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
 
     if (!ctx->active) {
         printf("FU-A drop: missing start fragment seq=%u timestamp=%u ssrc=0x%08X\n", seq, timestamp, ssrc);
+        return;
+    }
+
+    /* 墙钟超时：首片后超过 FU_A_REASSEMBLY_TIMEOUT_MS 仍未完成，视为丢末片。 */
+    if (fu_a_now_ms() - ctx->start_tick > FU_A_REASSEMBLY_TIMEOUT_MS) {
+        printf("FU-A drop: reassembly timeout, expected_seq=%u pending=%u, discard incomplete NALU\n",
+               ctx->expected_seq,
+               ctx->pending_fragments);
+        fu_a_reassembly_reset(ctx);
         return;
     }
 

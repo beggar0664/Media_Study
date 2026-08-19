@@ -1531,7 +1531,7 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 |---|---|---|
 | 丢首片 | 直接丢弃后续中间片和末片 | 没有首片就没有原始 NALU 头，无法开始重组 |
 | 丢中间片 | `seq` 不连续时丢弃当前 NALU | 分片缺失后无法恢复完整 NALU |
-| 丢末片 | `pending_fragments` 超过 `FU_A_REASSEMBLY_MAX_FRAGMENTS` 后丢弃当前不完整 NALU | 迟迟收不到 E=1，说明这一组没有完成边界 |
+| 丢末片 | 墙钟超时（`FU_A_REASSEMBLY_TIMEOUT_MS`）或片段数超限后丢弃当前不完整 NALU | 迟迟收不到 E=1，说明这一组没有完成边界 |
 | 乱序到达 | 区分“乱序先到”和“真丢包”：落在窗口内的乱序包打印 `FU-A ooo` 后丢弃当前 NALU | 当前不做数据暂存式重排序，只避免误判 |
 | 重复片 | `seq` 等于上一片已处理序号时静默丢弃，不影响当前 NALU | 重复包不破坏连续重组 |
 | `timestamp` 变化 | 丢弃旧上下文，不接着上一组拼 | 不同 timestamp 通常代表不同访问单元 |
@@ -1547,7 +1547,7 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 非首片到达
   -> 如果 active=false，说明缺首片，直接丢弃
-  -> 如果 pending_fragments 已超限，说明丢末片，丢弃当前 NALU
+  -> 如果墙钟超时或 pending_fragments 已超限，说明丢末片，丢弃当前 NALU
   -> 如果 timestamp/SSRC 不一致，丢弃旧上下文
   -> 如果 seq 等于上一片已处理序号，说明重复，静默丢弃
   -> 如果 seq 不等于 expected_seq，区分乱序和真丢包后丢弃当前 NALU
@@ -1558,7 +1558,6 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 这说明当前 mock 的目标不是做完整播放器级恢复，而是先把“FU-A 是怎么切、怎么拼、哪里会丢”的链路讲明白。真正用于生产的接收端，至少还要继续补上：
 
 1. 按 `seq` 做带数据暂存的小窗口重排序（当前只做乱序检测，不暂存数据）。
-2. 对跨 `timestamp` 的残留上下文做基于真实墙钟的超时清理（当前用片段计数兜底）。
 
 当前状态机已经提供完整 NALU 输出接口：重组完成时会调用 `fu_a_nalu_output_cb`，把裸 NALU、`nalu_size`、`timestamp`、`ssrc` 和调用方注册的 `user_data` 一起送出。这样上层可以把重组后的 NALU 直接交给解码器或写文件，而不必再从日志里捞。
 
