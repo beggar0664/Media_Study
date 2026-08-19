@@ -143,6 +143,8 @@ typedef void (*fu_a_nalu_output_cb)(const unsigned char *nalu,
                                    unsigned int ssrc,
                                    void *user_data);
 
+#define FU_A_REORDER_WINDOW_SIZE 8
+
 typedef struct {
     int active;
     uint32_t timestamp;
@@ -154,6 +156,13 @@ typedef struct {
     int length;
     fu_a_nalu_output_cb output_cb;
     void *output_user_data;
+    /*
+     * 乱序检测：记录最近一次先于期望序号到达的 seq。
+     * 当前学习版不做数据暂存式重排序，只区分“真丢包”和“乱序”，
+     * 避免把后续包先到误判成丢中间片。
+     */
+    unsigned int last_ooo_seq;
+    int last_ooo_seen;
 } h264_fu_a_reassembly_t;
 
 static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
@@ -168,6 +177,8 @@ static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
     ctx->pending_fragments = 0;
     ctx->nalu_header = 0;
     ctx->length = 0;
+    ctx->last_ooo_seq = 0;
+    ctx->last_ooo_seen = 0;
 }
 
 static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
@@ -291,7 +302,20 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
     }
 
     if (seq != ctx->expected_seq) {
-        printf("FU-A drop: expected seq=%u but got seq=%u, discard incomplete NALU\n", ctx->expected_seq, seq);
+        /*
+         * 乱序检测：当前学习版不做数据暂存式重排序。
+         * 如果 seq 落在 expected_seq 之后的小窗口内，说明后续包先到，
+         * 先记录为乱序；如果期望包迟迟不来，再按丢中间片处理。
+         */
+        int fwd = ((int)seq - (int)ctx->expected_seq) & 0xFFFF;
+        if (fwd > 0 && fwd <= FU_A_REORDER_WINDOW_SIZE) {
+            ctx->last_ooo_seq = seq;
+            ctx->last_ooo_seen = 1;
+            printf("FU-A ooo: expected seq=%u but got seq=%u (ahead %d), drop incomplete NALU\n",
+                   ctx->expected_seq, seq, fwd);
+        } else {
+            printf("FU-A drop: expected seq=%u but got seq=%u, discard incomplete NALU\n", ctx->expected_seq, seq);
+        }
         fu_a_reassembly_reset(ctx);
         return;
     }
