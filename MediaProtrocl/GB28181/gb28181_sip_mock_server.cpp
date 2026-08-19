@@ -171,12 +171,15 @@ typedef struct {
     fu_a_nalu_output_cb output_cb;
     void *output_user_data;
     /*
-     * 乱序检测：记录最近一次先于期望序号到达的 seq。
-     * 当前学习版不做数据暂存式重排序，只区分“真丢包”和“乱序”，
-     * 避免把后续包先到误判成丢中间片。
+     * 乱序重排序窗口：期望序号未到、但后续包先到时，先暂存到 slot，
+     * 等期望包补齐后按序追加；窗口满仍未补齐才丢弃当前 NALU。
+     * 每个 slot 独立保存 seq、used、data、len、fu_end，避免数据指针失效。
      */
-    unsigned int last_ooo_seq;
-    int last_ooo_seen;
+    unsigned int reorder_seq[FU_A_REORDER_WINDOW_SIZE];
+    unsigned char reorder_used[FU_A_REORDER_WINDOW_SIZE];
+    unsigned char reorder_data[FU_A_REORDER_WINDOW_SIZE][1500];
+    int reorder_len[FU_A_REORDER_WINDOW_SIZE];
+    unsigned int reorder_fu_end[FU_A_REORDER_WINDOW_SIZE];
     unsigned long long start_tick;
 } h264_fu_a_reassembly_t;
 
@@ -192,8 +195,15 @@ static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
     ctx->pending_fragments = 0;
     ctx->nalu_header = 0;
     ctx->length = 0;
-    ctx->last_ooo_seq = 0;
-    ctx->last_ooo_seen = 0;
+    {
+        int i;
+        for (i = 0; i < FU_A_REORDER_WINDOW_SIZE; ++i) {
+            ctx->reorder_used[i] = 0;
+            ctx->reorder_len[i] = 0;
+            ctx->reorder_seq[i] = 0;
+            ctx->reorder_fu_end[i] = 0;
+        }
+    }
     ctx->start_tick = 0;
 }
 
@@ -235,6 +245,88 @@ static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
  * 避免上一组残留状态一直挂到下一组首片才被覆盖。
  */
 #define FU_A_REASSEMBLY_MAX_FRAGMENTS 64
+/*
+ * 把乱序到达的 FU-A 分片暂存到重排序窗口。
+ * 返回 0 表示暂存成功；返回 -1 表示窗口已满或 slot 数据过大，应丢弃当前 NALU。
+ */
+static int fu_a_reorder_push(h264_fu_a_reassembly_t *ctx,
+                             unsigned int seq,
+                             const unsigned char *payload,
+                             int payload_size,
+                             unsigned int fu_end)
+{
+    int i;
+
+    if (!ctx) {
+        return -1;
+    }
+
+    for (i = 0; i < FU_A_REORDER_WINDOW_SIZE; ++i) {
+        if (!ctx->reorder_used[i]) {
+            int data_len = payload_size > 2 ? payload_size - 2 : 0;
+            if (data_len > (int)sizeof(ctx->reorder_data[i])) {
+                return -1;
+            }
+            ctx->reorder_used[i] = 1;
+            ctx->reorder_seq[i] = seq;
+            ctx->reorder_len[i] = data_len;
+            ctx->reorder_fu_end[i] = fu_end;
+            if (data_len > 0) {
+                memcpy(ctx->reorder_data[i], payload + 2, (size_t)data_len);
+            }
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+/*
+ * 刷出窗口里连续跟随在 expected_seq 后面的暂存包。
+ * 返回 1 表示刷出了末片（当前 NALU 已完成）；返回 0 表示仍在继续。
+ */
+static int fu_a_reorder_drain(h264_fu_a_reassembly_t *ctx)
+{
+    int i;
+
+    if (!ctx) {
+        return 0;
+    }
+
+    for (;;) {
+        int hit = -1;
+        for (i = 0; i < FU_A_REORDER_WINDOW_SIZE; ++i) {
+            if (ctx->reorder_used[i] && ctx->reorder_seq[i] == ctx->expected_seq) {
+                hit = i;
+                break;
+            }
+        }
+        if (hit < 0) {
+            return 0;
+        }
+
+        if (ctx->reorder_len[hit] > 0) {
+            int data_len = ctx->reorder_len[hit];
+            if (ctx->length + data_len > (int)sizeof(ctx->buffer)) {
+                data_len = (int)sizeof(ctx->buffer) - ctx->length;
+            }
+            if (data_len > 0) {
+                memcpy(ctx->buffer + ctx->length, ctx->reorder_data[hit], (size_t)data_len);
+                ctx->length += data_len;
+            }
+        }
+        ctx->expected_seq = (ctx->reorder_seq[hit] + 1) & 0xFFFF;
+        ctx->pending_fragments += 1;
+        if (ctx->reorder_fu_end[hit]) {
+            ctx->reorder_used[hit] = 0;
+            ctx->reorder_len[hit] = 0;
+            return 1;
+        }
+        ctx->reorder_used[hit] = 0;
+        ctx->reorder_len[hit] = 0;
+    }
+}
+
 static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
                                           unsigned int seq,
                                           uint32_t timestamp,
@@ -329,22 +421,27 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
 
     if (seq != ctx->expected_seq) {
         /*
-         * 乱序检测：当前学习版不做数据暂存式重排序。
-         * 如果 seq 落在 expected_seq 之后的小窗口内，说明后续包先到，
-         * 先记录为乱序；如果期望包迟迟不来，再按丢中间片处理。
+         * 乱序重排序：如果 seq 落在 expected_seq 之后的小窗口内，
+         * 暂存到 reorder slot，等期望包补齐后按序追加。
+         * 窗口满或 slot 数据过大才丢弃当前 NALU。
          */
         int fwd = ((int)seq - (int)ctx->expected_seq) & 0xFFFF;
         if (fwd > 0 && fwd <= FU_A_REORDER_WINDOW_SIZE) {
-            ctx->last_ooo_seq = seq;
-            ctx->last_ooo_seen = 1;
-            printf("FU-A ooo: expected seq=%u but got seq=%u (ahead %d), drop incomplete NALU\n",
-                   ctx->expected_seq, seq, fwd);
+            if (fu_a_reorder_push(ctx, seq, payload, payload_size, fu_end) == 0) {
+                printf("FU-A ooo: expected seq=%u but got seq=%u (ahead %d), buffered\n",
+                       ctx->expected_seq, seq, fwd);
+                return;
+            }
+            printf("FU-A drop: reorder window full, expected_seq=%u got seq=%u, discard incomplete NALU\n",
+                   ctx->expected_seq, seq);
         } else {
             printf("FU-A drop: expected seq=%u but got seq=%u, discard incomplete NALU\n", ctx->expected_seq, seq);
         }
         fu_a_reassembly_reset(ctx);
         return;
     }
+
+    /* 期望包到达：先追加当前分片，再刷出窗口里连续跟随的暂存包。 */
     ctx->expected_seq = (seq + 1) & 0xFFFF;
     ctx->pending_fragments += 1;
 
@@ -360,6 +457,19 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
     }
 
     if (fu_end) {
+        fu_a_reassembly_print_nalu(ctx);
+        if (ctx->output_cb) {
+            ctx->output_cb(ctx->buffer, ctx->length, ctx->timestamp, ctx->ssrc, ctx->output_user_data);
+        }
+        fu_a_reassembly_reset(ctx);
+        return;
+    }
+
+    /*
+     * 当前包不是末片时，尝试从重排序窗口刷出连续暂存包。
+     * 如果刷出了末片，说明这一组 NALU 已经由窗口里的暂存包完成。
+     */
+    if (fu_a_reorder_drain(ctx)) {
         fu_a_reassembly_print_nalu(ctx);
         if (ctx->output_cb) {
             ctx->output_cb(ctx->buffer, ctx->length, ctx->timestamp, ctx->ssrc, ctx->output_user_data);
