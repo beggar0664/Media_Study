@@ -100,10 +100,43 @@ static int find_bytes(const unsigned char *data, int size, const unsigned char *
     return -1;
 }
 
+static int is_video_pes_stream_id(unsigned char stream_id)
+{
+    return stream_id >= 0xE0 && stream_id <= 0xEF;
+}
+
+static int find_video_pes_start(const unsigned char *data, int size, unsigned char *stream_id_out)
+{
+    int i;
+
+    if (!data || size < 4) {
+        return -1;
+    }
+
+    for (i = 0; i + 3 < size; ++i) {
+        unsigned char stream_id;
+
+        if (data[i] != 0x00 || data[i + 1] != 0x00 || data[i + 2] != 0x01) {
+            continue;
+        }
+
+        stream_id = data[i + 3];
+        if (is_video_pes_stream_id(stream_id)) {
+            if (stream_id_out) {
+                *stream_id_out = stream_id;
+            }
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 typedef struct {
     int active;
     uint32_t timestamp;
     unsigned int ssrc;
+    unsigned int expected_seq;
     unsigned char nalu_header;
     unsigned char buffer[4096];
     int length;
@@ -117,6 +150,7 @@ static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
     ctx->active = 0;
     ctx->timestamp = 0;
     ctx->ssrc = 0;
+    ctx->expected_seq = 0;
     ctx->nalu_header = 0;
     ctx->length = 0;
 }
@@ -142,7 +176,20 @@ static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
     printf("\n");
 }
 
+/*
+ * H.264 FU-A 重组入口。
+ *
+ * 这里处理的是单个 RTP payload，不是完整 NALU：
+ *   - payload[0] 是 FU indicator
+ *   - payload[1] 是 FU header，包含 S/E 标志和原始 NALU type
+ *   - payload[2...] 是实际片段数据
+ *
+ * 当前实现只做最小学习闭环：按 timestamp + SSRC 把分片重新拼成原始 NALU，
+ * 再按 seq 检查分片是否连续，并在末片到达时打印结果。
+ * 它不负责解码，也不做乱序缓存；发现乱序或丢中间片时直接丢弃当前 NALU。
+ */
 static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
+                                          unsigned int seq,
                                           uint32_t timestamp,
                                           uint32_t ssrc,
                                           const unsigned char *payload,
@@ -163,6 +210,7 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         ctx->active = 1;
         ctx->timestamp = timestamp;
         ctx->ssrc = ssrc;
+        ctx->expected_seq = (seq + 1) & 0xFFFF;
         ctx->nalu_header = nalu_header;
         ctx->length = 0;
         if (ctx->length < (int)sizeof(ctx->buffer)) {
@@ -187,9 +235,23 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         return;
     }
 
-    if (!ctx->active || ctx->timestamp != timestamp || ctx->ssrc != ssrc) {
+    if (!ctx->active) {
+        printf("FU-A drop: missing start fragment seq=%u timestamp=%u ssrc=0x%08X\n", seq, timestamp, ssrc);
         return;
     }
+
+    if (ctx->timestamp != timestamp || ctx->ssrc != ssrc) {
+        printf("FU-A drop: timestamp/ssrc changed before end, seq=%u timestamp=%u ssrc=0x%08X\n", seq, timestamp, ssrc);
+        fu_a_reassembly_reset(ctx);
+        return;
+    }
+
+    if (seq != ctx->expected_seq) {
+        printf("FU-A drop: expected seq=%u but got seq=%u, discard incomplete NALU\n", ctx->expected_seq, seq);
+        fu_a_reassembly_reset(ctx);
+        return;
+    }
+    ctx->expected_seq = (seq + 1) & 0xFFFF;
 
     if (payload_size > 2) {
         data_len = payload_size - 2;
@@ -208,20 +270,49 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
     }
 }
 
+/*
+ * PS over RTP payload 的最小拆层摘要。
+ *
+ * 这个函数只在 RTP payload 看起来像 PS pack 时调用，学习路径是：
+ *   PS pack header(00 00 01 BA)
+ *     -> video PES(00 00 01 E0-0xEF)
+ *     -> PES PTS
+ *     -> Annex-B H.264 NALU start code(00 00 00 01)
+ *
+ * 它不做完整 PS 解复用，只打印足够对照抓包和理解 GB28181 PS over RTP 的关键字段。
+ */
 static void print_ps_payload_summary(const unsigned char *payload, int payload_size)
 {
     const unsigned char ps_pack_start[] = {0x00, 0x00, 0x01, 0xBA};
-    const unsigned char video_pes_start[] = {0x00, 0x00, 0x01, 0xE0};
+    /*
+     * 当前发送端 gb28181_build_ps_pack_h264() 写出的 video PES stream_id 是 0xE0，
+     * 但接收端学习代码不再只写死 E0，而是识别 0xE0-0xEF 这一组 video stream_id。
+     *
+     * 更完整的工程做法不能在整个 payload 里全局扫描 00 00 01，
+     * 因为 PS pack、PES 和 H.264 Annex-B NALU 都可能出现这个前缀。
+     * 应该先在 PS 层按结构推进：解析/跳过 pack header、system header、
+     * program_stream_map 等，再遇到 PES start code prefix: 00 00 01 时读取 stream_id 并分类：
+     *   0xE0-0xEF -> video stream
+     *   0xC0-0xDF -> audio stream
+     *   0xBD      -> private_stream_1
+     *   0xBC      -> program_stream_map
+     * 只有进入 PES payload 后，才按 H.264 Annex-B 规则查找 NALU start code。
+     */
     const unsigned char annexb_start[] = {0x00, 0x00, 0x00, 0x01};
+    unsigned char video_stream_id = 0;
     int ps_offset;
     int pes_offset;
     int nalu_offset;
 
     ps_offset = find_bytes(payload, payload_size, ps_pack_start, (int)sizeof(ps_pack_start));
-    pes_offset = find_bytes(payload, payload_size, video_pes_start, (int)sizeof(video_pes_start));
+    pes_offset = find_video_pes_start(payload, payload_size, &video_stream_id);
     nalu_offset = find_bytes(payload, payload_size, annexb_start, (int)sizeof(annexb_start));
 
-    printf("PS scan: pack_start=%d video_pes=%d annexb_nalu=%d\n", ps_offset, pes_offset, nalu_offset);
+    printf("PS scan: pack_start=%d video_pes=%d video_stream_id=0x%02X annexb_nalu=%d\n",
+           ps_offset,
+           pes_offset,
+           video_stream_id,
+           nalu_offset);
     if (pes_offset >= 0 && pes_offset + 9 < payload_size) {
         unsigned int pes_len = (unsigned int)((payload[pes_offset + 4] << 8) | payload[pes_offset + 5]);
         unsigned int pes_flags = payload[pes_offset + 7];
@@ -246,6 +337,19 @@ static void print_ps_payload_summary(const unsigned char *payload, int payload_s
     }
 }
 
+/*
+ * 打印 RTP 包摘要，并对 payload 做学习式识别。
+ *
+ * 这个函数关注的是“RTP 这一层到底收到了什么”：
+ *   - 先解析固定头里的 V / M / PT / Sequence Number / Timestamp / SSRC
+ *   - 再根据 payload 头判断是 PS over RTP、裸 H.264 IDR，还是 H.264 FU-A
+ *   - 若是 FU-A，就把分片交给 fu_a_reassembly_handle_packet() 演示重组
+ *
+ * 接收解析学习路径是：UDP -> RTP header -> payload 类型判断 -> PS/PES/NALU 或 FU-A 重组。
+ *
+ * 它不是完整 RTP 协议栈，也不是解码器，只是为了把抓包结果和 GB28181 学习链路
+ * 对齐，方便理解 SDP 协商、RTP 发送、FU-A 重组和 PS 解析之间的关系。
+ */
 static void print_rtp_packet_summary(const unsigned char *data, int size)
 {
     static h264_fu_a_reassembly_t fu_a_ctx;
@@ -255,6 +359,7 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
     unsigned int seq;
     uint32_t timestamp;
     uint32_t ssrc;
+    /* 当前 demo 只处理最小 RTP 固定头，长度是 12 字节。 */
     int payload_offset = 12;
     int payload_size;
     int i;
@@ -264,6 +369,18 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
         return;
     }
 
+    /*
+     * RTP fixed header 的最小 12 字节布局：
+     *   data[0]    : V / P / X / CC，其中高 2 位是 version
+     *   data[1]    : M / PT，其中最高位是 marker，低 7 位是 payload type
+     *   data[2..3] : sequence number，网络字节序，大端
+     *   data[4..7] : timestamp，网络字节序，大端
+     *   data[8..11]: SSRC，网络字节序，大端
+     *   data[12..] : RTP payload
+     *
+     * 真实工程里如果 CC > 0、X = 1 或 P = 1，payload_offset 不能固定为 12，
+     * 还要跳过 CSRC、扩展头或处理尾部 padding。当前学习 demo 暂不覆盖这些扩展情况。
+     */
     version = (unsigned int)((data[0] >> 6) & 0x03);
     marker = (unsigned int)((data[1] >> 7) & 0x01);
     payload_type = (unsigned int)(data[1] & 0x7F);
@@ -287,13 +404,34 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
         printf(" %02X", data[payload_offset + i]);
     }
     printf("\n");
+
+    /*
+     * PS over RTP 判断：PS pack header 固定以 00 00 01 BA 开头。
+     * GB28181 常见媒体负载就是把 H.264/H.265 先封进 PS/PES，再放进 RTP payload。
+     */
     if (payload_size >= 4 && data[payload_offset] == 0x00 && data[payload_offset + 1] == 0x00 &&
         data[payload_offset + 2] == 0x01 && data[payload_offset + 3] == 0xBA) {
         printf("payload type guess: PS pack header 00 00 01 BA\n");
         print_ps_payload_summary(data + payload_offset, payload_size);
     } else if (payload_size > 0 && (data[payload_offset] & 0x1F) == 5) {
+        /* 裸 H.264 单包 NALU：NALU header 低 5 位 type=5，表示 IDR slice。 */
         printf("payload type guess: raw H.264 IDR NALU\n");
     } else if (payload_size >= 2 && (data[payload_offset] & 0x1F) == 28) {
+        /*
+         * H.264 FU-A 分包规则：
+         *   RTP payload[0] = FU indicator
+         *     - F/NRI 继承原始 NALU header
+         *     - 低 5 位 type=28，表示当前 payload 不是完整 NALU，而是 FU-A 分片
+         *
+         *   RTP payload[1] = FU header
+         *     - bit7 S=1 表示首片
+         *     - bit6 E=1 表示末片
+         *     - 低 5 位保留原始 NALU type，例如 5 表示 IDR
+         *
+         *   RTP payload[2...] = 当前分片承载的原始 NALU 数据片段。
+         * 接收端要按 seq 排序、按 timestamp/SSRC 归组，再用 S/E 位判断 NALU 起止；
+         * marker 通常只在访问单元最后一个 RTP 包上置 1，不能单独代替 FU-A 的 S/E 判断。
+         */
         unsigned int fu_start = (unsigned int)((data[payload_offset + 1] >> 7) & 0x01);
         unsigned int fu_end = (unsigned int)((data[payload_offset + 1] >> 6) & 0x01);
         unsigned int fu_type = (unsigned int)(data[payload_offset + 1] & 0x1F);
@@ -307,14 +445,16 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
                fu_type,
                fu_role);
         fu_a_reassembly_handle_packet(&fu_a_ctx,
+                                      seq,
                                       timestamp,
                                       ssrc,
                                       data + payload_offset,
                                       payload_size,
                                       fu_start,
-                                      fu_end,
-                                      fu_type);
+                                       fu_end,
+                                       fu_type);
     } else {
+        /* 当前 demo 没覆盖的 payload 类型先只打印头部，便于后续按抓包继续扩展解析。 */
         printf("payload type guess: unknown/demo payload\n");
     }
 }

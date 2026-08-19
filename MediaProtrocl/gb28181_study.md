@@ -878,6 +878,57 @@ RTP 头部里最重要的字段：
 | SSRC | 同步源标识 |
 | Marker | 常用于标记一个访问单元结束或关键边界 |
 
+如果再往下拆，RTP 头本身是一个 12 字节起步的固定头，再加可选字段：
+
+| 字段 | 位宽 | 说明 |
+|---|---|---|
+| `V` | 2 | 版本号，RTP 固定为 2 |
+| `P` | 1 | Padding，末尾是否有填充字节 |
+| `X` | 1 | Extension，是否有扩展头 |
+| `CC` | 4 | CSRC 个数 |
+| `M` | 1 | Marker 位 |
+| `PT` | 7 | Payload Type |
+| `Sequence Number` | 16 | 包序号 |
+| `Timestamp` | 32 | 媒体时间戳 |
+| `SSRC` | 32 | 同步源标识 |
+
+其中 `P / X / CC` 在当前示例里没有被重点使用，但在更完整的 RTP 场景里是要认识的：
+
+| 字段 | 作用 |
+|---|---|
+| `P` | 如果末尾有填充字节，接收端可以据此丢掉 padding |
+| `X` | 说明后面跟着扩展头，扩展头里可能放额外同步信息 |
+| `CC` | 说明后面跟着多少个 CSRC 标识 |
+
+当前示例里的 `print_rtp_packet_summary()` 只取了最关键的 `V / M / PT / Sequence Number / Timestamp / SSRC`，这样足够把 `GB28181` 的媒体链路串起来；但文档这里要比它更完整，所以把 `P / X / CC` 也补出来了。
+
+再往下拆一层，RTP 固定头其实是 12 字节，字段含义可以直接按字节看：
+
+| 字节/位 | 字段 | 含义 |
+|---|---|---|
+| `byte0[7:6]` | `V` | RTP 版本，当前示例应为 `2` |
+| `byte0[5]` | `P` | Padding 标志，表示尾部是否有填充字节 |
+| `byte0[4]` | `X` | Extension 标志，表示后面是否带扩展头 |
+| `byte0[3:0]` | `CC` | CSRC Count，后面跟着多少个 CSRC |
+| `byte1[7]` | `M` | Marker，表示当前媒体单元是否结束 |
+| `byte1[6:0]` | `PT` | Payload Type，表示负载类型编号 |
+| `byte2-3` | `Sequence Number` | 序号，接收端用来判定乱序和丢包 |
+| `byte4-7` | `Timestamp` | 同一媒体时刻的时间戳，和 SDP 里的时钟频率配合解释 |
+| `byte8-11` | `SSRC` | 同步源标识，区分不同 RTP 流 |
+
+当前 `print_rtp_packet_summary()` 之所以只打印 `V / M / PT / Sequence Number / Timestamp / SSRC`，是因为这几个字段已经足够支撑当前学习链路：
+
+| 解析器字段 | 当前用途 |
+|---|---|
+| `V` | 确认是 RTP/2 |
+| `M` | 观察一帧或一个分片序列的边界 |
+| `PT` | 和 SDP 里的 `a=rtpmap` 对应 |
+| `Sequence Number` | 观察连续性、丢包、乱序 |
+| `Timestamp` | 归并同一时刻的媒体数据 |
+| `SSRC` | 区分同一端可能存在的不同流 |
+
+`P / X / CC` 目前在这个 demo 里没有被使用，但它们仍然属于标准 RTP 头的一部分，学习时要知道它们存在，后面看到真实抓包才不会把扩展头或 CSRC 误判成 payload。
+
 RTP 头的最小结构可以先记成这样：
 
 ```text
@@ -1470,6 +1521,47 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 这说明接收端已经把一组 FU-A 分片还原回原始裸 NALU：首字节恢复成 `0x65`，长度恢复成 `256`。这里仍然没有解码图像，只是完成了 H.264 RTP 负载层的重组验证。
 
+### 10.4 FU-A 异常场景怎么处理
+
+当前 mock 里的 `fu_a_reassembly_handle_packet()` 已经补成学习版接收状态机：不做乱序缓存，不做跨包等待，但会围绕 `seq + timestamp + SSRC + S/E` 判断这一组分片是否还能拼成一个完整 NALU。
+
+最常见的异常情况可以这样看：
+
+| 场景 | 当前处理 | 原因 |
+|---|---|---|
+| 丢首片 | 直接丢弃后续中间片和末片 | 没有首片就没有原始 NALU 头，无法开始重组 |
+| 丢中间片 | `seq` 不连续时丢弃当前 NALU | 分片缺失后无法恢复完整 NALU |
+| 丢末片 | 一直保留 active 状态，直到下一次首片覆盖或重置 | 说明这一组 NALU 没有完成边界 |
+| 乱序到达 | `seq` 不等于期望值时丢弃当前 NALU | 当前实现不维护乱序缓冲队列 |
+| 重复片 | `seq` 不等于期望值时丢弃当前 NALU | 当前实现没有去重队列，重复片会破坏连续性 |
+| `timestamp` 变化 | 丢弃旧上下文，不接着上一组拼 | 不同 timestamp 通常代表不同访问单元 |
+
+和代码对应起来看，当前逻辑的核心判断就两处：
+
+```text
+首片到达
+  -> active = 1
+  -> 记录 timestamp / SSRC / 原始 NALU 头
+  -> 记录下一片 expected_seq
+  -> 追加首片有效数据
+
+非首片到达
+  -> 如果 active=false，说明缺首片，直接丢弃
+  -> 如果 timestamp/SSRC 不一致，丢弃旧上下文
+  -> 如果 seq 不等于 expected_seq，丢弃当前 NALU
+  -> 如果匹配当前上下文，继续追加
+  -> 遇到末片则打印重组结果并 reset
+```
+
+这说明当前 mock 的目标不是做完整播放器级恢复，而是先把“FU-A 是怎么切、怎么拼、哪里会丢”的链路讲明白。真正用于生产的接收端，至少还要继续补上：
+
+1. 按 `seq` 做小窗口重排序。
+2. 对缺首片、缺中间片、缺末片做超时丢弃。
+3. 对重复包做去重。
+4. 对跨 `timestamp` 的残留上下文做清理。
+
+这样你就能从“能看见分片”继续推进到“能正确判定一帧是否完整”。
+
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
 ```text
@@ -1517,6 +1609,31 @@ sequenceDiagram
 
 #### 接收端怎么反向拆层看
 
+发送侧已经学完以后，接收侧可以按下面这条路径反向拆回来：
+
+```text
+UDP packet
+  -> RTP fixed header
+  -> RTP payload type guess
+  -> PS over RTP / raw H.264 / H.264 FU-A
+  -> PS pack / PES / Annex-B NALU
+  -> FU-A reassembly
+  -> complete NALU
+```
+
+对应到当前代码，学习顺序建议是：
+
+| 步骤 | 代码入口 | 学习重点 |
+|---|---|---|
+| 1 | `print_rtp_packet_summary()` | 解析 RTP 固定头，理解 `pt / marker / seq / timestamp / ssrc` |
+| 2 | `print_rtp_packet_summary()` | 根据 payload 开头判断 `PS / raw H.264 / FU-A` |
+| 3 | `print_ps_payload_summary()` | 从 PS payload 里找 `PS pack -> PES -> Annex-B NALU` |
+| 4 | `fu_a_reassembly_handle_packet()` | 按 `timestamp + SSRC + S/E` 把 FU-A 片段还原成裸 NALU |
+
+这条路径和发送侧正好相反：发送端是“先封装再发送”，接收端是“先收包再拆层”。
+
+注意不要把所有 `00 00 01` 都当成同一类起始码。PS pack、PES 和 H.264 Annex-B 都可能出现这个前缀，真实工程里要按当前层级解释：在 PS 层先解析/跳过 pack header、system header、program_stream_map，再根据 PES 的 `stream_id` 判断音视频流；进入 PES payload 后，才按 Annex-B 规则找 H.264 NALU。
+
 现在 `gb28181_sip_mock_server.exe` 也会监听 `udp/30000`，它收到 RTP 后不会只停留在“这是一个 UDP 包”的层面，而是继续往下扫载荷：
 
 ```text
@@ -1524,7 +1641,7 @@ sequenceDiagram
 version=2 pt=96 marker=1 seq=... timestamp=... ssrc=0x12345678 payload_len=...
 payload head: 00 00 01 BA ...
 payload type guess: PS pack header 00 00 01 BA
-PS scan: pack_start=0 video_pes=14 annexb_nalu=24
+PS scan: pack_start=0 video_pes=14 video_stream_id=0xE0 annexb_nalu=24
 PES detail: stream_id=0xE0 pes_len=51 flags=0x80 header_len=5
 NALU detail: first_byte=0x67 h264_type=7
 ```
@@ -1536,7 +1653,8 @@ NALU detail: first_byte=0x67 h264_type=7
 | `version / pt / marker / seq / timestamp / ssrc` | 这是 RTP 头，描述传输和重组信息 |
 | `payload head` | RTP 负载的前几个字节，用来判断里面装的是 PS、裸 H.264，还是别的格式 |
 | `pack_start=0` | 在 RTP payload 的开头找到了 `00 00 01 BA`，说明这是 PS pack |
-| `video_pes=14` | 在 PS 里找到了 `00 00 01 E0`，说明后面跟的是视频 PES |
+| `video_pes=14` | 在 PS 里找到了视频 PES start code，当前 demo 是 `00 00 01 E0` |
+| `video_stream_id=0xE0` | 当前识别到的视频流 ID；接收代码按 `0xE0-0xEF` 识别不同视频流 |
 | `annexb_nalu=24` | 在 PES 负载里找到了 Annex-B 起始码 `00 00 00 01` |
 | `stream_id=0xE0` | 视频 PES 的 stream_id，表示视频流 |
 | `pes_len` | PES 包长度。`0` 代表长度不填，由上层边界决定；非 0 表示已写出长度字段 |

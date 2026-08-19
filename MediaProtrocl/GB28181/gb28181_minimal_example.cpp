@@ -27,6 +27,17 @@ int main(void)
     char register_msg[2048];
     char invite_msg[4096];
     char bye_msg[2048];
+    /*
+     * 下面三段是裸 H.264 NALU，不带 Annex-B start code。
+     *
+     * 裸 NALU 的第一个字节就是 NALU header：
+     *   0x67 -> type=7，SPS
+     *   0x68 -> type=8，PPS
+     *   0x65 -> type=5，IDR slice
+     *
+     * 这些数据很小，示例里直接通过 gb28181_send_rtp_packet() 单包发送，
+     * 用来先观察裸 H.264 over RTP 的最小访问单元：SPS -> PPS -> IDR。
+     */
     const unsigned char demo_h264_sps[] = {
         0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x78,
         0x02, 0x27, 0xe5, 0xc0
@@ -38,6 +49,10 @@ int main(void)
         0x65, 0x88, 0x84, 0x21, 0xa0, 0x10, 0x11, 0x12,
         0x13, 0x14, 0x15, 0x16, 0x17, 0x18
     };
+    /*
+     * 这段是 Annex-B 形式的 H.264 数据，每个 NALU 前面都有 00 00 00 01 起始码。
+     * 它不是给 FU-A 用的，而是给 gb28181_build_ps_pack_h264() 打包成 PS/PES 用的。
+     */
     const unsigned char demo_h264_annexb[] = {
         0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1f,
         0xac, 0xd9, 0x40, 0x78, 0x02, 0x27, 0xe5, 0xc0,
@@ -74,7 +89,17 @@ int main(void)
     cfg.payload_type = 96;
     cfg.ssrc = 0x12345678;
 
-    /* 构造一个较大的裸 IDR NALU，专门用来触发 H.264 FU-A 分片。 */
+    /*
+     * 构造一个较大的裸 IDR NALU，专门用来触发 H.264 FU-A 分片。
+     *
+     * large_idr_nalu[0] = 0x65，表示原始 NALU 是 IDR(type=5)。
+     * 后面 255 字节只是演示填充数据，不代表真实编码器输出。
+     *
+     * 后面调用 gb28181_send_h264_fu_a(..., max_payload_size=24, ...)，
+     * 每个 RTP payload 里还要留 2 字节给 FU indicator / FU header，
+     * 所以每片最多只装 22 字节原始 NALU 数据。256 字节的 NALU 放不进一包，
+     * 因此一定会被拆成多片 FU-A。
+     */
     large_idr_nalu[0] = 0x65;
     for (normal_h264_len = 1; normal_h264_len < (int)sizeof(large_idr_nalu); ++normal_h264_len) {
         large_idr_nalu[normal_h264_len] = (unsigned char)(0x80 + (normal_h264_len & 0x3F));
@@ -166,7 +191,18 @@ int main(void)
             printf("[3/4] send fragmented PS total=%d len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)demo_ps_len, 9000u);
         }
         if (ret >= 0) {
-            /* H.264 FU-A: RTP payload starts with FU indicator and FU header, not a raw 0x65 NALU byte. */
+            /*
+             * H.264 FU-A 分片发送演示。
+             *
+             * 输入 large_idr_nalu 是裸 IDR NALU，首字节是 0x65。
+             * 进入 gb28181_send_h264_fu_a() 后，0x65 不会原样出现在每个 RTP payload 开头，
+             * 而是被拆成：
+             *   FU indicator = 0x7C，表示这是 FU-A(type=28)，并保留原 NRI
+             *   FU header    = 0x85 / 0x05 / 0x45，分别表示首片 / 中间片 / 末片
+             *
+             * max_payload=24 是故意取很小，用来强制 256 字节 IDR NALU 触发多包分片。
+             * 如果 max_payload 足够大，裸 NALU 可以单包发出，就不需要 FU-A。
+             */
             printf("sending H.264 FU-A fragmented IDR: max_payload=24\n");
             ret = gb28181_send_h264_fu_a(handle, large_idr_nalu, (int)sizeof(large_idr_nalu), 24, 9000);
             printf("[3/4] send H264 FU-A total=%d nalu_len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)sizeof(large_idr_nalu), 9000u);

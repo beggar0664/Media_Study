@@ -829,6 +829,17 @@ static int build_pts(unsigned char *dst, unsigned char fb, unsigned long long ts
     return 5;
 }
 
+/*
+ * 将 Annex-B H.264 数据封装成最小 PS over RTP 所需的 PS/PES 字节流。
+ *
+ * 处理层次：H.264 Annex-B -> 视频 PES -> PS pack。
+ * 这个函数只负责生成内存中的 PS 数据，不创建 RTP 头，也不发送 UDP；
+ * 生成结果还需要交给 gb28181_send_rtp_packet() 或
+ * gb28181_send_rtp_payload_fragmented() 发送。
+ *
+ * annexb_data 必须包含 00 00 00 01 或 00 00 01 起始码；pts_90khz 和
+ * dts_90khz 使用 90 kHz 时间基；返回值是输出 PS 字节数，失败返回负值。
+ */
 int gb28181_build_ps_pack_h264(const unsigned char *annexb_data,
                                int annexb_size,
                                unsigned int pts_90khz,
@@ -1147,6 +1158,14 @@ int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out)
     return 0;
 }
 
+/*
+ * RTP 单包发送原语。
+ *
+ * 把一段已经准备好的 payload 封装并发送为一个 RTP 包；函数不理解 payload
+ * 是 PS、裸 H.264 还是 FU-A，只负责使用当前会话的 PT、SSRC、序号和时间戳发送。
+ * timestamp_inc 是本次发送后时间戳的相对增量，不是绝对时间戳；marker 通常只在
+ * 一个媒体单元的最后一个 RTP 包上置 1。返回实际发送的 payload 字节数，失败返回负值。
+ */
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker)
 {
     /*
@@ -1177,6 +1196,14 @@ int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int pa
     return payload_size;
 }
 
+/*
+ * 通用 RTP payload 字节分片发送。
+ *
+ * 将一个已经准备好的 payload 按 max_payload_size 机械切块，并多次调用
+ * gb28181_send_rtp_packet()；不解析、不改写 payload 内部结构。当前主要用于
+ * PS over RTP：前面的分片 marker=0，最后一片 marker=1，只有最后一片推进 timestamp。
+ * 它不是 H.264 FU-A 分片器。返回所有已发送 payload 字节数，失败返回负值。
+ */
 int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
                                         const void *payload,
                                         int payload_size,
@@ -1224,6 +1251,15 @@ int gb28181_send_rtp_payload_fragmented(gb28181_handle_t handle,
     return total_sent;
 }
 
+/*
+ * H.264 裸 NALU 的 FU-A 语义分片发送。
+ *
+ * 输入必须是带原始 NALU 头的裸 NALU，例如 0x65 开头的 IDR，不带 Annex-B
+ * start code。函数跳过原始 NALU 头，为每个 RTP payload 写入 FU indicator 和
+ * FU header，并按首片/中间片/末片设置 S/E 位；前 2 字节占用 FU-A 头，因此每片
+ * 实际最多承载 max_payload_size - 2 字节 NALU 数据。内部仍通过
+ * gb28181_send_rtp_packet() 完成真正发送。返回所有已发送 payload 字节数，失败返回负值。
+ */
 int gb28181_send_h264_fu_a(gb28181_handle_t handle,
                            const unsigned char *nalu,
                            int nalu_size,
