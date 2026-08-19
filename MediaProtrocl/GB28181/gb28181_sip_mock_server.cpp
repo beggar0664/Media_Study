@@ -227,6 +227,11 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
 
     nalu_header = (unsigned char)((payload[0] & 0xE0) | (fu_type & 0x1F));
     if (fu_start) {
+        if (ctx->active) {
+            printf("FU-A drop: start fragment overlaps unfinished NALU, expected_seq=%u pending=%u, restarting\n",
+                   ctx->expected_seq,
+                   ctx->pending_fragments);
+        }
         ctx->active = 1;
         ctx->timestamp = timestamp;
         ctx->ssrc = ssrc;
@@ -276,6 +281,12 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
     if (ctx->timestamp != timestamp || ctx->ssrc != ssrc) {
         printf("FU-A drop: timestamp/ssrc changed before end, seq=%u timestamp=%u ssrc=0x%08X\n", seq, timestamp, ssrc);
         fu_a_reassembly_reset(ctx);
+        return;
+    }
+
+    /* 重复包去重：seq 等于上一片已处理序号时，判定为重复并静默丢弃，不影响当前 NALU。 */
+    if (seq == ((ctx->expected_seq - 1) & 0xFFFF)) {
+        printf("FU-A drop: duplicate fragment seq=%u, ignored\n", seq);
         return;
     }
 
