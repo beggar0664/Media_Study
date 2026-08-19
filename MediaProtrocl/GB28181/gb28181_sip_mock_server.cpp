@@ -132,6 +132,17 @@ static int find_video_pes_start(const unsigned char *data, int size, unsigned ch
     return -1;
 }
 
+/*
+ * 重组完成回调：状态机在末片到达、拼出一个完整 NALU 后调用。
+ * nalu / nalu_size 是重组后的裸 NALU；timestamp / ssrc 取自当前 RTP 上下文。
+ * user_data 由调用方在注册回调时传入，状态机只原样回传。
+ */
+typedef void (*fu_a_nalu_output_cb)(const unsigned char *nalu,
+                                   int nalu_size,
+                                   uint32_t timestamp,
+                                   unsigned int ssrc,
+                                   void *user_data);
+
 typedef struct {
     int active;
     uint32_t timestamp;
@@ -141,6 +152,8 @@ typedef struct {
     unsigned char nalu_header;
     unsigned char buffer[4096];
     int length;
+    fu_a_nalu_output_cb output_cb;
+    void *output_user_data;
 } h264_fu_a_reassembly_t;
 
 static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
@@ -238,6 +251,9 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
                ctx->timestamp, ctx->ssrc, ctx->nalu_header);
         if (fu_end) {
             fu_a_reassembly_print_nalu(ctx);
+            if (ctx->output_cb) {
+                ctx->output_cb(ctx->buffer, ctx->length, ctx->timestamp, ctx->ssrc, ctx->output_user_data);
+            }
             fu_a_reassembly_reset(ctx);
         }
         return;
@@ -284,6 +300,9 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
 
     if (fu_end) {
         fu_a_reassembly_print_nalu(ctx);
+        if (ctx->output_cb) {
+            ctx->output_cb(ctx->buffer, ctx->length, ctx->timestamp, ctx->ssrc, ctx->output_user_data);
+        }
         fu_a_reassembly_reset(ctx);
     }
 }

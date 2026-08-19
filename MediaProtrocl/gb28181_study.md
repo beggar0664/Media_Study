@@ -1560,7 +1560,18 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 2. 对重复包做去重。
 3. 对跨 `timestamp` 的残留上下文做基于真实墙钟的超时清理（当前用片段计数兜底）。
 
-这样你就能从“能看见分片”继续推进到“能正确判定一帧是否完整”。
+当前状态机已经提供完整 NALU 输出接口：重组完成时会调用 `fu_a_nalu_output_cb`，把裸 NALU、`nalu_size`、`timestamp`、`ssrc` 和调用方注册的 `user_data` 一起送出。这样上层可以把重组后的 NALU 直接交给解码器或写文件，而不必再从日志里捞。
+
+```text
+末片到达
+  -> fu_a_reassembly_print_nalu(ctx)  // 保留学习日志
+  -> ctx->output_cb(buffer, length, timestamp, ssrc, user_data)  // 交给上层
+  -> fu_a_reassembly_reset(ctx)
+```
+
+不注册回调时，状态机仍只打印日志，行为和之前一致。
+
+这样你就能从“能看见分片”继续推进到“能正确判定一帧是否完整”，并把完整 NALU 交给上层。
 
 当 PS 数据超过单个 RTP payload 能承载的大小时，需要把同一段 PS 数据拆成多个 RTP 包：
 
