@@ -137,6 +137,7 @@ typedef struct {
     uint32_t timestamp;
     unsigned int ssrc;
     unsigned int expected_seq;
+    unsigned int pending_fragments;
     unsigned char nalu_header;
     unsigned char buffer[4096];
     int length;
@@ -151,6 +152,7 @@ static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
     ctx->timestamp = 0;
     ctx->ssrc = 0;
     ctx->expected_seq = 0;
+    ctx->pending_fragments = 0;
     ctx->nalu_header = 0;
     ctx->length = 0;
 }
@@ -187,7 +189,12 @@ static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
  * 当前实现只做最小学习闭环：按 timestamp + SSRC 把分片重新拼成原始 NALU，
  * 再按 seq 检查分片是否连续，并在末片到达时打印结果。
  * 它不负责解码，也不做乱序缓存；发现乱序或丢中间片时直接丢弃当前 NALU。
+ *
+ * 陈旧上下文清理：如果已经 active 但迟迟收不到末片，pending_fragments 会累积，
+ * 超过 FU_A_REASSEMBLY_MAX_FRAGMENTS 就判定丢末片并丢弃当前不完整 NALU，
+ * 避免上一组残留状态一直挂到下一组首片才被覆盖。
  */
+#define FU_A_REASSEMBLY_MAX_FRAGMENTS 64
 static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
                                           unsigned int seq,
                                           uint32_t timestamp,
@@ -211,6 +218,7 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         ctx->timestamp = timestamp;
         ctx->ssrc = ssrc;
         ctx->expected_seq = (seq + 1) & 0xFFFF;
+        ctx->pending_fragments = 1;
         ctx->nalu_header = nalu_header;
         ctx->length = 0;
         if (ctx->length < (int)sizeof(ctx->buffer)) {
@@ -240,6 +248,15 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         return;
     }
 
+    /* 丢末片保护：已 active 但片段数超限仍未收到 E=1，视为不完整 NALU 丢弃。 */
+    if (ctx->pending_fragments >= FU_A_REASSEMBLY_MAX_FRAGMENTS) {
+        printf("FU-A drop: stale reassembly, expected_seq=%u pending=%u, discard incomplete NALU\n",
+               ctx->expected_seq,
+               ctx->pending_fragments);
+        fu_a_reassembly_reset(ctx);
+        return;
+    }
+
     if (ctx->timestamp != timestamp || ctx->ssrc != ssrc) {
         printf("FU-A drop: timestamp/ssrc changed before end, seq=%u timestamp=%u ssrc=0x%08X\n", seq, timestamp, ssrc);
         fu_a_reassembly_reset(ctx);
@@ -252,6 +269,7 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         return;
     }
     ctx->expected_seq = (seq + 1) & 0xFFFF;
+    ctx->pending_fragments += 1;
 
     if (payload_size > 2) {
         data_len = payload_size - 2;

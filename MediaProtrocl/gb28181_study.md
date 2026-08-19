@@ -1523,7 +1523,7 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 ### 10.4 FU-A 异常场景怎么处理
 
-当前 mock 里的 `fu_a_reassembly_handle_packet()` 已经补成学习版接收状态机：不做乱序缓存，不做跨包等待，但会围绕 `seq + timestamp + SSRC + S/E` 判断这一组分片是否还能拼成一个完整 NALU。
+当前 mock 里的 `fu_a_reassembly_handle_packet()` 已经补成学习版接收状态机：不做乱序缓存，不做跨包等待，但会围绕 `seq + timestamp + SSRC + S/E + pending_fragments` 判断这一组分片是否还能拼成一个完整 NALU。
 
 最常见的异常情况可以这样看：
 
@@ -1531,7 +1531,7 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 |---|---|---|
 | 丢首片 | 直接丢弃后续中间片和末片 | 没有首片就没有原始 NALU 头，无法开始重组 |
 | 丢中间片 | `seq` 不连续时丢弃当前 NALU | 分片缺失后无法恢复完整 NALU |
-| 丢末片 | 一直保留 active 状态，直到下一次首片覆盖或重置 | 说明这一组 NALU 没有完成边界 |
+| 丢末片 | `pending_fragments` 超过 `FU_A_REASSEMBLY_MAX_FRAGMENTS` 后丢弃当前不完整 NALU | 迟迟收不到 E=1，说明这一组没有完成边界 |
 | 乱序到达 | `seq` 不等于期望值时丢弃当前 NALU | 当前实现不维护乱序缓冲队列 |
 | 重复片 | `seq` 不等于期望值时丢弃当前 NALU | 当前实现没有去重队列，重复片会破坏连续性 |
 | `timestamp` 变化 | 丢弃旧上下文，不接着上一组拼 | 不同 timestamp 通常代表不同访问单元 |
@@ -1547,6 +1547,7 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 非首片到达
   -> 如果 active=false，说明缺首片，直接丢弃
+  -> 如果 pending_fragments 已超限，说明丢末片，丢弃当前 NALU
   -> 如果 timestamp/SSRC 不一致，丢弃旧上下文
   -> 如果 seq 不等于 expected_seq，丢弃当前 NALU
   -> 如果匹配当前上下文，继续追加
@@ -1556,9 +1557,8 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 这说明当前 mock 的目标不是做完整播放器级恢复，而是先把“FU-A 是怎么切、怎么拼、哪里会丢”的链路讲明白。真正用于生产的接收端，至少还要继续补上：
 
 1. 按 `seq` 做小窗口重排序。
-2. 对缺首片、缺中间片、缺末片做超时丢弃。
-3. 对重复包做去重。
-4. 对跨 `timestamp` 的残留上下文做清理。
+2. 对重复包做去重。
+3. 对跨 `timestamp` 的残留上下文做基于真实墙钟的超时清理（当前用片段计数兜底）。
 
 这样你就能从“能看见分片”继续推进到“能正确判定一帧是否完整”。
 
