@@ -238,11 +238,11 @@ static void fu_a_reassembly_print_nalu(const h264_fu_a_reassembly_t *ctx)
  *
  * 当前实现只做最小学习闭环：按 timestamp + SSRC 把分片重新拼成原始 NALU，
  * 再按 seq 检查分片是否连续，并在末片到达时打印结果。
- * 它不负责解码，也不做乱序缓存；发现乱序或丢中间片时直接丢弃当前 NALU。
+ * 它不负责解码；发现丢中间片（超出重排序窗口）或丢末片时直接丢弃当前 NALU。
  *
- * 陈旧上下文清理：如果已经 active 但迟迟收不到末片，pending_fragments 会累积，
- * 超过 FU_A_REASSEMBLY_MAX_FRAGMENTS 就判定丢末片并丢弃当前不完整 NALU，
- * 避免上一组残留状态一直挂到下一组首片才被覆盖。
+ * 乱序重排序：落在窗口内的后续包先暂存到 reorder slot，期望包到达后按序刷出。
+ * 陈旧上下文清理：如果已经 active 但迟迟收不到末片，墙钟超时或 pending_fragments
+ * 超限就判定丢末片并丢弃当前不完整 NALU，避免上一组残留状态一直挂到下一组首片才被覆盖。
  */
 #define FU_A_REASSEMBLY_MAX_FRAGMENTS 64
 /*

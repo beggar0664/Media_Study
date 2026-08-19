@@ -1523,7 +1523,7 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 ### 10.4 FU-A 异常场景怎么处理
 
-当前 mock 里的 `fu_a_reassembly_handle_packet()` 已经补成学习版接收状态机：不做乱序缓存，不做跨包等待，但会围绕 `seq + timestamp + SSRC + S/E + pending_fragments` 判断这一组分片是否还能拼成一个完整 NALU。
+当前 mock 里的 `fu_a_reassembly_handle_packet()` 已经补成学习版接收状态机：围绕 `seq + timestamp + SSRC + S/E + pending_fragments + 墙钟` 判断这一组分片是否还能拼成一个完整 NALU，并带一个 8 槽位的乱序重排序窗口。
 
 最常见的异常情况可以这样看：
 
