@@ -1202,19 +1202,24 @@ PTS detail: bytes=21 00 01 46 51 value=9000 (90kHz)
 
 这也是为什么在这套学习代码里，`gb28181_sip_register_client.cpp` 负责把 `INVITE + SDP` 发出去，`gb28181_minimal_example.cpp` 负责把 RTP 包真正打出来。
 
-## 9. 当前最小模块还没做完什么
+## 9. 当前进度和走向生产设备还差什么
 
-现在的模块适合学习，不是完整国标设备端。还缺这些能力：
+当前模块已经把 GB28181 的核心学习链路走通，从信令到媒体到接收重组都有可运行的 demo：
 
-- 完整 SIP UDP/TCP 收发框架
-- 完整 SIP 客户端状态机
-- Catalog 响应列表解析
-- DeviceInfo / DeviceStatus XML
-- INVITE / ACK / BYE 的完整 dialog 状态管理
-- H.264 / H.265 RTP 分片器，例如 H.264 FU-A、H.265 FU
-- RTP over TCP 或国标主动/被动模式
+- SIP 信令：REGISTER + 401 Digest 鉴权、MESSAGE Keepalive/Catalog/DeviceInfo/DeviceStatus、INVITE+SDP+ACK+BYE 全流程可跑
+- SDP 协商：m=、a=rtpmap、a=sendonly/recvonly、a=ssrc 都有构造和对应说明
+- 媒体发送：gb28181_build_ps_pack_h264() PS/PES 打包、gb28181_send_rtp_packet() 单包原语、gb28181_send_rtp_payload_fragmented() 通用分片、gb28181_send_h264_fu_a() H.264 语义分片
+- 媒体接收：print_rtp_packet_summary() 拆 RTP 头并识别 PS/raw H.264/FU-A，print_ps_payload_summary() 拆 PS pack->PES->PTS->NALU，fu_a_reassembly_handle_packet() 带丢包/乱序/超时检测的 FU-A 重组状态机
+- 验证闭环：fu_a_default_output_cb() 把重组 NALU 写入 gb28181_rx.h264，可用 ffplay/ffmpeg 验证
 
-其中 Digest 的“头字段解析 + Authorization 生成”已经有最小实现，缺的是把它接到真实 socket 收发循环里。
+如果目标是“能当生产设备用”，还缺以下能力（按优先级排列）：
+
+- 设备状态机：注册失败重试、Keepalive 周期与超时、INVITE 被拒处理、BYE 后资源清理、断线重连
+- 真实媒体源：用真实编码器或 IPC SDK 取码流，替换当前 demo 的固定 SPS/PPS/IDR 测试数据
+- RTCP：SR/RR 报文、丢包率/抖动统计、RTT 计算、多流时钟同步
+- H.265 支持：H.265 FU 分片与重组（当前只做了 H.264 FU-A）
+- RTP over TCP：国标主动拉流 / 被动收流模式（当前只做了 UDP）
+- 平台互操作测试：对接真实国标平台验证兼容性
 
 ## 10. 如何验证
 
