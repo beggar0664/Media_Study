@@ -1569,6 +1569,24 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
   -> fu_a_reassembly_reset(ctx)
 ```
 
+当前 mock server 已经注册了一个默认回调 `fu_a_default_output_cb`：它会把重组完成的裸 NALU 加上 `00 00 00 01` Annex-B start code 追加写入当前工作目录下的 `gb28181_rx.h264`。这样整条学习链路就形成了一个闭环：
+
+```text
+发送端 gb28181_minimal_example
+  -> gb28181_send_h264_fu_a() 把大 IDR NALU 切成多个 FU-A 分片
+  -> 每片用 gb28181_send_rtp_packet() 打 RTP 包发往 udp/30000
+
+接收端 gb28181_sip_mock_server
+  -> print_rtp_packet_summary() 拆 RTP 头，识别 payload type
+  -> fu_a_reassembly_handle_packet() 按 seq + timestamp + S/E 重组
+  -> fu_a_default_output_cb() 把完整 NALU 写入 gb28181_rx.h264
+
+验证
+  -> ffplay gb28181_rx.h264
+  -> 或 ffmpeg -i gb28181_rx.h264 -f null - 检查能否被正确解封装
+```
+
+注意 `gb28181_rx.h264` 写的是裸 NALU 字节流（Annex-B），不是 PS 容器，所以直接用 ffplay/ffmpeg 打开即可。如果只发了 demo 的 SPS/PPS/IDR，画面只是一帧或几帧，不会像真实码流那样连续播放，但足以验证"分片发送 -> 接收重组 -> NALU 还原"这条链路是否正确。
 不注册回调时，状态机仍只打印日志，行为和之前一致。
 
 这样你就能从“能看见分片”继续推进到“能正确判定一帧是否完整”，并把完整 NALU 交给上层。

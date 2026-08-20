@@ -558,9 +558,51 @@ static void print_ps_payload_summary(const unsigned char *payload, int payload_s
  * 它不是完整 RTP 协议栈，也不是解码器，只是为了把抓包结果和 GB28181 学习链路
  * 对齐，方便理解 SDP 协商、RTP 发送、FU-A 重组和 PS 解析之间的关系。
  */
+/*
+ * 默认 NALU 输出回调：把重组后的裸 NALU 加上 Annex-B start code 追加写到文件。
+ * 这样可以用 ffplay/ffmpeg 直接打开 gb28181_rx.h264 验证整条接收链路是否正确。
+ */
+static void fu_a_default_output_cb(const unsigned char *nalu,
+                                   int nalu_size,
+                                   uint32_t timestamp,
+                                   unsigned int ssrc,
+                                   void *user_data)
+{
+    static FILE *fp = NULL;
+    const unsigned char annexb_start[] = {0x00, 0x00, 0x00, 0x01};
+
+    (void)timestamp;
+    (void)ssrc;
+    (void)user_data;
+
+    if (!nalu || nalu_size <= 0) {
+        return;
+    }
+
+    if (!fp) {
+        fp = fopen("gb28181_rx.h264", "wb");
+        if (!fp) {
+            printf("FU-A output: cannot open gb28181_rx.h264\n");
+            return;
+        }
+        printf("FU-A output: writing reassembled NALU to gb28181_rx.h264\n");
+    }
+
+    fwrite(annexb_start, 1, sizeof(annexb_start), fp);
+    fwrite(nalu, 1, (size_t)nalu_size, fp);
+    fflush(fp);
+    printf("FU-A output: wrote nalu len=%d timestamp=%u ssrc=0x%08X\n", nalu_size, timestamp, ssrc);
+}
+
 static void print_rtp_packet_summary(const unsigned char *data, int size)
 {
     static h264_fu_a_reassembly_t fu_a_ctx;
+    static int fu_a_ctx_initialized = 0;
+    if (!fu_a_ctx_initialized) {
+        fu_a_ctx.output_cb = fu_a_default_output_cb;
+        fu_a_ctx.output_user_data = NULL;
+        fu_a_ctx_initialized = 1;
+    }
     unsigned int version;
     unsigned int marker;
     unsigned int payload_type;
