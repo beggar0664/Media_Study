@@ -1761,3 +1761,73 @@ IDR 是一种 I 帧，但 I 帧不一定是 IDR。IDR 的特点是不会引用�
 - [GB28181 minimal example](GB28181/gb28181_minimal_example.cpp)
 - [GB28181 module header](GB28181/gb28181_module.h)
 - [GB28181 module implementation](GB28181/gb28181_module.cpp)
+
+## 14. 走向生产设备
+
+前面的章节把 GB28181 的学习链路走通了：信令、SDP、RTP 发送、PS 打包、FU-A 分片与重组都有可运行的 demo。如果要把它变成"能当生产设备用"的代码，第一步是把当前线性走完就退出的 demo 改成状态机驱动的常驻设备。
+
+### 14.1 当前 demo 的结构和问题
+
+`gb28181_sip_register_client.cpp` 的 `main()` 是一条直线流程：
+
+```text
+init -> socket -> bind ->
+  REGISTER(无auth) -> recv 401 -> REGISTER(带auth) -> recv 200 ->
+  MESSAGE Keepalive -> MESSAGE Catalog -> DeviceInfo -> DeviceStatus ->
+  INVITE -> recv 200+SDP -> ACK -> 发一包 RTP -> BYE -> recv 200 ->
+  退出
+```
+
+这条链路有几个生产环境不能接受的问题：
+
+- 没有重试：任何一步收不到响应就直接打印错误继续往下走
+- 没有保活循环：Keepalive 只发一次，真实设备需要周期发送
+- 没有会话维护：INVITE 成功后不维护 dialog 状态，BYE 后不清理
+- 没有断线重连：socket 断了就退出，不会重新注册
+- 单线程阻塞：recv 是同步的，收信令和发媒体不能并行
+
+### 14.2 生产设备状态机设计
+
+生产设备需要把"我当前处于什么状态"显式管理起来，而不是靠代码执行位置隐含。核心状态：
+
+```text
+IDLE            初始状态，未开始注册
+REGISTERING     已发 REGISTER(无auth)，等 401
+AUTHENTICATING  已发 REGISTER(带auth)，等 200
+REGISTERED     注册成功，可收发 MESSAGE
+INVITING        已发 INVITE，等 200+SDP
+STREAMING       已 ACK，媒体会话建立中
+BYE_PENDING     已发 BYE，等 200
+DEREGISTERING   已发 Expires:0 注销请求，等 200
+```
+
+状态迁移由事件驱动：
+
+```text
+IDLE --[启动]--> REGISTERING
+REGISTERING --[recv 401]--> AUTHENTICATING
+REGISTERING --[超时]--> REGISTERING (重试，有计数上限)
+AUTHENTICATING --[recv 200]--> REGISTERED
+AUTHENTICATING --[recv 401/403]--> IDLE (鉴权失败，不重试)
+REGISTERED --[定时器]--> REGISTERED (周期发 Keepalive)
+REGISTERED --[INVITE触发]--> INVITING
+INVITING --[recv 200+SDP]--> STREAMING (发 ACK)
+INVITING --[recv 486/603]--> REGISTERED (被拒)
+STREAMING --[发完/BYE触发]--> BYE_PENDING
+BYE_PENDING --[recv 200]--> REGISTERED
+REGISTERED --[注销]--> DEREGISTERING
+DEREGISTERING --[recv 200]--> IDLE
+任何状态 --[socket断/连续超时]--> IDLE (重连，有退避)
+```
+
+### 14.3 实现策略
+
+当前仓库已有的信令构造和解析函数（`gb28181_build_register`、`gb28181_parse_sip_message`、`gb28181_build_digest_authorization` 等）可以直接复用，不需要重写。需要新增的是：
+
+1. **设备状态结构体**：保存当前状态、重试计数、Keepalive 定时器、INVITE dialog 信息（Call-ID、branch、CSeq）
+2. **事件循环**：用 `select()` 或非阻塞 recv 同时监听 SIP socket 和定时器，替代当前"发完就同步等响应"的模式
+3. **Keepalive 线程或定时回调**：周期发 Keepalive MESSAGE，连续 N 次没收到 200 就认为掉线
+4. **媒体发送分离**：STREAMING 状态下，媒体发送和 SIP 收信要并行，可以用独立线程或 select 复用
+5. **退避重连**：掉线后不是立即重连，而是指数退避（1s -> 2s -> 4s ...），避免风暴
+
+这一步先从状态机骨架开始，不急着接真实编码器。等状态机能稳定跑 REGISTER -> Keepalive -> INVITE -> ACK -> BYE -> 注销的循环，再把 demo 媒体数据换成真实码流。
