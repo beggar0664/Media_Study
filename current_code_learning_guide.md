@@ -10,16 +10,19 @@
 flowchart TD
     A[current_code_learning_guide.md] --> B[media_layer_commonality.md]
     A --> C[MediaProtrocl/gb28181_study.md]
+    A --> CR[MediaProtrocl/GB28181/gb28181_code_reference.md]
     C --> D[gb28181_module.h]
+    CR --> D
     D --> E[gb28181_sip_register_client.cpp]
     D --> F[gb28181_sip_mock_server.cpp]
     D --> G[gb28181_minimal_example.cpp]
     E --> H[Wireshark: SIP 5060/5062]
     F --> H
+    F --> R[gb28181_rx.h264: ffplay 验证]
     G --> I[Wireshark: RTP 30000]
 ```
 
-这张图的读法是：先读总纲，再看 GB28181 模块接口，随后分别跑 SIP client/server 和 RTP 示例，用抓包反向验证字段。
+这张图的读法是：先读总纲，再看 GB28181 模块接口（`gb28181_study.md` 讲协议、`gb28181_code_reference.md` 讲代码能力），随后分别跑 SIP client/server 和 RTP 示例，用抓包反向验证字段，最后用 `ffplay gb28181_rx.h264` 验证接收重组闭环。
 
 ## 1. 先建立分层概念
 
@@ -188,6 +191,27 @@ PS over RTP:
 00 00 00 01 65 -> IDR
 ```
 
+mock server 收到 RTP 后会继续往里拆，不依赖 Wireshark：
+
+```text
+version/pt/marker/seq/timestamp/ssrc
+payload head: ...
+payload type guess: PS pack header 00 00 01 BA / raw H.264 IDR / H.264 FU-A
+PS scan: pack_start=.. video_pes=.. annexb_nalu=..
+FU-A detail: indicator=0x.. header=0x.. S/E/type role=first/middle/last
+FU-A reassembled NALU: len=.. header=0x65
+```
+
+FU-A 重组完成后，mock server 会把完整 NALU 写入运行目录 `gb28181_rx.h264`（Annex-B 裸流）：
+
+```powershell
+ffplay gb28181_rx.h264
+# 或只验证能否被正确解封装：
+ffmpeg -i gb28181_rx.h264 -f null -
+```
+
+注意 demo 媒体是固定 SPS/PPS/IDR 测试字节，画面只有一帧/几帧，验证目标是"接收重组链路正确"，不是"能播长视频"。
+
 PS over RTP 的载荷关系图：
 
 ```mermaid
@@ -212,17 +236,24 @@ flowchart TD
 gb28181_build_register()
 gb28181_build_message_keepalive()
 gb28181_build_message_catalog()
+gb28181_build_message_catalog_response()
+gb28181_build_message_device_info_query()
+gb28181_build_message_device_info()
+gb28181_build_message_device_status_query()
+gb28181_build_message_device_status()
 gb28181_build_invite()
 gb28181_build_bye()
+gb28181_build_sdp()
 gb28181_parse_sip_message()
 gb28181_parse_www_authenticate()
 gb28181_build_digest_authorization()
 gb28181_build_ps_pack_h264()
 gb28181_send_rtp_packet()
 gb28181_send_rtp_payload_fragmented()
+gb28181_send_h264_fu_a()
 ```
 
-头文件解决的是“这个模块能做什么”，不要先陷入实现细节。
+头文件解决的是“这个模块能做什么”，不要先陷入实现细节。函数全量清单和能力边界见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md) 第 4 节。
 
 ### 5.2 再读 SIP client
 
@@ -258,13 +289,14 @@ gb28181_send_rtp_payload_fragmented()
 ```text
 收到无鉴权 REGISTER -> 回 401
 收到带 Authorization REGISTER -> 回 200
-收到 MESSAGE -> 解析 XML CmdType -> 回 200
+收到 MESSAGE -> 解析 XML CmdType -> 回 200，再回 Catalog/DeviceInfo/DeviceStatus Response
 收到 INVITE -> 回 200 + SDP
 收到 ACK -> 标记媒体会话建立
 收到 BYE -> 回 200
+收到 RTP(udp/30000) -> 拆 RTP 头 -> 识别 PS/裸H.264/FU-A -> 拆 PS 或 FU-A 重组 -> 落盘 gb28181_rx.h264
 ```
 
-这份代码适合理解平台端最小响应逻辑。
+这份代码同时是 SIP 平台和 **RTP 接收端**。接收端能力（RTP 头解析、PS 拆层、FU-A 重组状态机）见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md) 第 5 节。
 
 ### 5.4 再读 RTP 示例
 
@@ -310,21 +342,35 @@ RTP 分片如何控制 marker/timestamp
 |---|---|---|
 | 1 | SIP 文本和事务 | 跑 mock server + client，看 REGISTER/401/200 |
 | 2 | Digest 鉴权 | Wireshark 看 `WWW-Authenticate` 和 `Authorization` |
-| 3 | SIP MESSAGE XML | 看 Keepalive/Catalog 的 `<CmdType>` |
+| 3 | SIP MESSAGE XML | 跑 Keepalive/Catalog/DeviceInfo/DeviceStatus，看 `<CmdType>` 与响应 |
 | 4 | SDP 媒体协商 | 看 `m=`、`a=rtpmap`、`a=ssrc` |
 | 5 | RTP 头 | 看 PT、Seq、Timestamp、Marker、SSRC |
 | 6 | PS over RTP | 看 `00 00 01 BA`、`00 00 01 E0`、NALU 起始码 |
 | 7 | 分片 | 看多包同一 timestamp、最后一包 marker=1 |
+| 8 | 接收端重组 | mock server 收 RTP 后打印 FU-A detail / PS scan；`ffplay gb28181_rx.h264` 验证落盘 |
 
-## 7. 后续可以扩展什么
+## 7. 当前已实现与后续扩展
 
-当前代码是学习用最小模块，不是完整设备端。后续可以按优先级补：
+当前代码已经覆盖**学习闭环**，不是"什么都没做"的最小骨架。已完成的能力：
 
-1. Catalog 响应列表解析。
-2. DeviceInfo / DeviceStatus XML。
-3. 更完整的 SIP dialog 状态管理。
-4. H.264 FU-A 和 H.265 FU RTP 分片。
-5. RTP over TCP / 国标主动和被动模式。
-6. 对接真实 GB28181 平台。
+1. SIP 信令全流程：REGISTER + 401 Digest、MESSAGE（Keepalive/Catalog/DeviceInfo/DeviceStatus，含查询+响应）、INVITE+SDP+ACK+BYE。
+2. Catalog 响应解析：客户端解析多条 `Item`，按 `Status=ON` 选通道作为后续 INVITE 目标。
+3. DeviceInfo / DeviceStatus XML 查询与响应。
+4. 媒体发送：PS/PES 打包、RTP 单包原语、通用字节分片、H.264 FU-A 语义分片。
+5. 媒体接收：RTP 头解析、payload 识别（PS/裸 H.264/FU-A）、PS 拆层（pack→PES→PTS→NALU）、**FU-A 重组状态机**（带丢包/乱序/超时检测和 8 槽重排序窗口）。
+6. 验证闭环：重组后的 NALU 经回调写入运行目录 `gb28181_rx.h264`（Annex-B 裸流），可用 `ffplay gb28181_rx.h264` 或 `ffmpeg -i gb28181_rx.h264 -f null -` 验证整条接收链路。
+
+逐函数能力清单、接收端状态机机制和输出文件说明见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md)。
+
+后续走向"能当生产设备用"还差（按优先级）：
+
+1. 设备状态机：把直线走完就退出的 client 改成常驻、事件驱动、重试/Keepalive 周期/断线重连。
+2. 真实媒体源：用真实编码器或 IPC SDK 取码流，替换固定 SPS/PPS/IDR 测试数据。
+3. RTCP：SR/RR 报文、丢包率/抖动统计、RTT、多流时钟同步（仓库尚无 RTCP 收发）。
+4. H.265 支持：FU 分片与重组（当前仅 H.264）。
+5. RTP over TCP：国标主动拉流 / 被动收流模式（当前仅 UDP）。
+6. 对接真实 GB28181 平台互操作测试（当前全部是 mock↔mock 自测）。
+
+生产设备状态机设计的具体路线见 [MediaProtrocl/gb28181_study.md](MediaProtrocl/gb28181_study.md) 第 14 节。
 
 学习时不要追求一次写完整协议栈。先让每一层能跑、能抓包、能解释字段，再逐步补完整。

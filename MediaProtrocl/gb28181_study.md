@@ -1212,6 +1212,8 @@ PTS detail: bytes=21 00 01 46 51 value=9000 (90kHz)
 - 媒体接收：print_rtp_packet_summary() 拆 RTP 头并识别 PS/raw H.264/FU-A，print_ps_payload_summary() 拆 PS pack->PES->PTS->NALU，fu_a_reassembly_handle_packet() 带丢包/乱序/超时检测的 FU-A 重组状态机
 - 验证闭环：fu_a_default_output_cb() 把重组 NALU 写入 gb28181_rx.h264，可用 ffplay/ffmpeg 验证
 
+以上能力的逐函数清单、接收端 FU-A 重组状态机机制和运行验证步骤见 [GB28181/gb28181_code_reference.md](GB28181/gb28181_code_reference.md)。
+
 如果目标是“能当生产设备用”，还缺以下能力（按优先级排列）：
 
 - 设备状态机：注册失败重试、Keepalive 周期与超时、INVITE 被拒处理、BYE 后资源清理、断线重连
@@ -1757,6 +1759,7 @@ IDR 是一种 I 帧，但 I 帧不一定是 IDR。IDR 的特点是不会引用�
 
 ## 13. 现有文件入口
 
+- [GB28181 代码参考](GB28181/gb28181_code_reference.md) —— 代码能力清单（逐函数、接收端状态机、运行验证）
 - [GB28181 README](GB28181/README.md)
 - [GB28181 minimal example](GB28181/gb28181_minimal_example.cpp)
 - [GB28181 module header](GB28181/gb28181_module.h)
@@ -1765,6 +1768,8 @@ IDR 是一种 I 帧，但 I 帧不一定是 IDR。IDR 的特点是不会引用�
 ## 14. 走向生产设备
 
 前面的章节把 GB28181 的学习链路走通了：信令、SDP、RTP 发送、PS 打包、FU-A 分片与重组都有可运行的 demo。如果要把它变成"能当生产设备用"的代码，第一步是把当前线性走完就退出的 demo 改成状态机驱动的常驻设备。
+
+第 9 节列出了"已实现 / 待补"对照，逐函数的能力边界见 [GB28181/gb28181_code_reference.md](GB28181/gb28181_code_reference.md) 第 7 节。下面只讲生产化第一步——状态机——怎么落地。
 
 ### 14.1 当前 demo 的结构和问题
 
