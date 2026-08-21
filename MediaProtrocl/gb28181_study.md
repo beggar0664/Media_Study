@@ -1836,3 +1836,24 @@ DEREGISTERING --[recv 200]--> IDLE
 5. **退避重连**：掉线后不是立即重连，而是指数退避（1s -> 2s -> 4s ...），避免风暴
 
 这一步先从状态机骨架开始，不急着接真实编码器。等状态机能稳定跑 REGISTER -> Keepalive -> INVITE -> ACK -> BYE -> 注销的循环，再把 demo 媒体数据换成真实码流。
+
+### 14.4 状态机骨架已落地
+
+`gb28181_device_stateful.cpp` 已实现上述设计的骨架，与现有 mock server 跑通验证：
+
+- 八态迁移：`IDLE / REGISTERING / AUTHENTICATING / REGISTERED / INVITING / STREAMING / BYE_PENDING / DEREGISTERING`
+- `select()` 事件循环替代同步 recv，单线程复用 SIP socket 和定时器
+- Keepalive 周期定时器（学习用 2s，生产 60s），连续 N 次无 200 判掉线
+- 指数退避重连（1s -> 2s -> 4s，封顶 60s）
+- BYE 后回 REGISTERED，可循环 INVITE（已验证 2 次循环）
+- `Expires:0` 注销路径
+
+已验证的闭环（mock↔stateful）：`IDLE -> REGISTERING ->(401)-> AUTHENTICATING ->(200)-> REGISTERED -> INVITING ->(200+SDP)-> STREAMING ->(ACK + demo PS)-> BYE_PENDING ->(200)-> REGISTERED`，循环 N 次后走 `DEREGISTERING`。媒体包被 mock 接收端识别为 PS pack 并拆层。
+
+仍待补（下一步）：
+
+- 真实媒体源替换 demo PS（状态机骨架已就绪，接入编码器即可）
+- 退避重连、鉴权失败转 IDLE 等路径在真实平台验证（mock 不完全支持这些路径，代码已写对）
+- RTCP / H.265 / TCP 承载
+
+代码能力清单与运行方式见 [GB28181/gb28181_code_reference.md](GB28181/gb28181_code_reference.md) 第 3.5 节和第 7 节。

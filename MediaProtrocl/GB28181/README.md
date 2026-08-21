@@ -27,8 +27,9 @@
 - `gb28181_module.h`：公共 C 接口
 - `gb28181_module.cpp`：内部 C++ 实现，使用 `jrtplib`
 - `gb28181_minimal_example.cpp`：媒体发送演示（裸 H.264 / PS over RTP / FU-A 分片）
-- `gb28181_sip_register_client.cpp`：SIP UDP/Digest 全流程客户端，ACK 后发一包 PS
+- `gb28181_sip_register_client.cpp`：SIP UDP/Digest 全流程客户端（直线版），ACK 后发一包 PS
 - `gb28181_sip_mock_server.cpp`：SIP 平台 mock **兼** RTP 接收端，含 FU-A 重组状态机
+- `gb28181_device_stateful.cpp`：设备状态机（常驻版），八态迁移 + Keepalive 周期 + 指数退避重连
 - `gb28181_code_reference.md`：代码能力参考文档
 - `CMakeLists.txt`：构建入口
 

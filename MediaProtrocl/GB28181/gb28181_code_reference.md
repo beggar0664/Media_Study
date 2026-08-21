@@ -24,6 +24,8 @@
 
 关键是：发送端和接收端都用本仓库自己的代码，形成一个**不依赖任何外部平台**的回环闭环，可以用 Wireshark / WinHex / ffplay 反向验证每一步。
 
+`gb28181_device_stateful.cpp` 是 `gb28181_sip_register_client.cpp` 的状态机升级版：直线 demo 走完就退出，状态机版常驻、有保活循环、BYE 后能回注册态继续 INVITE、掉线指数退避重连。两者复用同一套 `gb28181_module.h` 信令函数，对照阅读能看清"直线流程→状态机"的演进。
+
 ## 2. 文件分工
 
 | 文件 | 角色 | 看它学什么 |
@@ -31,16 +33,18 @@
 | `gb28181_module.h` | 公共 C 接口 | 模块暴露了哪些能力：配置、SIP 解析结果、生命周期、报文构造、RTP 发送 |
 | `gb28181_module.cpp` | 模块实现（内部用 `jrtplib`） | SIP 文本拼接、SDP、Digest MD5、XML 提取、PS/PES/PTS 字节、RTP session、分片发送 |
 | `gb28181_minimal_example.cpp` | 媒体发送演示 | 裸 H.264 over RTP、PS over RTP、强制小包分片、FU-A 分片 |
-| `gb28181_sip_register_client.cpp` | SIP 客户端演示 | REGISTER->401->Digest->MESSAGE->INVITE->ACK->BYE 全流程，ACK 后发一包 PS |
+| `gb28181_sip_register_client.cpp` | SIP 客户端演示（直线） | REGISTER->401->Digest->MESSAGE->INVITE->ACK->BYE 全流程，ACK 后发一包 PS |
 | `gb28181_sip_mock_server.cpp` | SIP 平台 + RTP 接收 mock | 平台侧最小响应，**同时**是接收端：拆 RTP 头、识别 payload、拆 PS、FU-A 重组、落盘 |
+| `gb28181_device_stateful.cpp` | 设备状态机（常驻） | 八态迁移、select 事件循环、Keepalive 周期、指数退避重连、BYE 后回 REGISTERED 可循环 INVITE |
 | `CMakeLists.txt` | 构建入口 | 目标定义、内置 jrtplib/jthread、输出到 `out/` |
 
-构建产物全部落到 `out/buildBin/`：
+构建产物全部落到 `out/buildBin/`（VS 多配置生成器下 Debug 配置在 `out/buildBin/Debug/`）：
 
 - `gb28181_minimal_example.exe`
 - `gb28181_sip_register_client.exe`
 - `gb28181_sip_mock_server.exe`
-- `gb28181_module`（静态库，被上面三个目标链接）
+- `gb28181_device_stateful.exe`
+- `gb28181_module`（静态库，被上面四个目标链接）
 
 ## 3. 构建与运行
 
@@ -125,6 +129,44 @@ ffmpeg -i gb28181_rx.h264 -f null -
 ```
 
 注意：demo 媒体是固定的 SPS/PPS/IDR 测试字节，不是真实采集码流，所以画面只有一帧/几帧，不会连续播放。验证目标是"分片发送 -> 接收重组 -> NALU 还原"这条链路正确，不是"能播长视频"。
+
+### 3.5 跑状态机（常驻设备）
+
+先起 mock server，再跑状态机（默认 2 次 INVITE/BYE 循环后注销退出，可选参数控制循环次数，0=常驻到 Ctrl+C）：
+
+```powershell
+# 窗口 1
+E:\code\Media\MediaProtrocl\GB28181\out\buildBin\gb28181_sip_mock_server.exe
+# 窗口 2
+E:\code\Media\MediaProtrocl\GB28181\out\buildBin\Debug\gb28181_device_stateful.exe 2
+```
+
+预期状态迁移日志：
+
+```text
+[state] IDLE -> REGISTERING
+[rx] 401 in REGISTERING
+[state] REGISTERING -> AUTHENTICATING
+[rx] 200 in AUTHENTICATING
+[state] AUTHENTICATING -> REGISTERED
+[timeout] REGISTERED auto-invite trigger
+[state] REGISTERED -> INVITING
+[rx] 200 in INVITING, send ACK + start media
+[state] INVITING -> STREAMING
+[timeout] STREAMING hold elapsed, send BYE
+[state] STREAMING -> BYE_PENDING
+[rx] 200 in BYE_PENDING, back to REGISTERED
+[state] BYE_PENDING -> REGISTERED      # 第二次循环再 INVITE
+...
+===== TX REGISTER (deregister Expires:0)
+[state] BYE_PENDING -> DEREGISTERING
+[state] DEREGISTERING -> IDLE
+===== device stopped
+```
+
+mock 端会收到对应次数的 RTP（每次 STREAMING 一包 PS），打印 `payload type guess: PS pack header` + `PS scan`。
+
+> DEREGISTERING 在 mock 上会收到 501——mock 不识别 `Expires:0` 注销语义，这是 mock 的局限不是状态机 bug。状态机按"非 200 即超时 force idle"处理，路径正确，真实平台会回 200。退避重连、鉴权失败转 IDLE 等路径同理：代码已写对，需真实平台验证。
 
 ## 4. 模块能力清单（逐函数）
 
@@ -343,23 +385,24 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - 媒体发送：PS/PES 打包、RTP 单包、通用字节分片、H.264 FU-A 分片
 - 媒体接收：RTP 头解析、payload 识别(PS/裸H.264/FU-A)、PS 拆层、**FU-A 重组状态机**（重排序窗+超时+丢包/乱序/重复处理）
 - 验证闭环：重组 NALU 落盘 `gb28181_rx.h264`，可用 ffplay/ffmpeg 验证
+- **设备状态机骨架**（`gb28181_device_stateful.cpp`）：常驻进程、`IDLE/REGISTERING/AUTHENTICATING/REGISTERED/INVITING/STREAMING/BYE_PENDING/DEREGISTERING` 八态迁移、`select()` 事件循环、Keepalive 周期定时器、连续超时判掉线、指数退避重连、BYE 后回 REGISTERED 可循环 INVITE、`Expires:0` 注销。媒体仍复用 demo PS 包。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
-- 设备状态机：常驻、重试、Keepalive 周期、断线重连（当前 client 是直线走完退出）
-- 真实媒体源：替换固定 SPS/PPS/IDR 为真实编码器/IPC SDK 取流
+- 真实媒体源：替换固定 SPS/PPS/IDR 为真实编码器/IPC SDK 取流（状态机骨架已就绪，下一轮接入）
 - RTCP：SR/RR、丢包率/抖动、RTT、多流时钟同步（仓库尚无 RTCP 收发）
 - H.265：FU 分片与重组（当前仅 H.264）
 - RTP over TCP：国标主动拉流/被动收流（当前仅 UDP，`use_tcp` 返回 -2）
-- 真实平台互操作：当前全部是 mock↔mock 自测
+- 真实平台互操作：当前全部是 mock↔mock 自测（退避重连、鉴权失败转 IDLE 等路径代码已写对，需真实平台验证）
 
 ## 8. 阅读顺序建议
 
 1. `gb28181_module.h` —— 先看模块能做什么，不进实现。
-2. `gb28181_sip_register_client.cpp` 的 `main()` —— 看一条 SIP 事务链怎么串。
-3. `gb28181_sip_mock_server.cpp` 的 `main()` —— 看平台侧最小响应 + RTP 接收主循环。
-4. `print_rtp_packet_summary` -> `print_ps_payload_summary` -> `fu_a_reassembly_handle_packet` —— 看接收端怎么逐层拆。
-5. `gb28181_minimal_example.cpp` —— 看发送端三类 payload 和分片。
-6. `gb28181_module.cpp` —— 最后看字节级实现：SIP 文本、SDP、Digest MD5、PS/PES/PTS、jrtplib session。
+2. `gb28181_sip_register_client.cpp` 的 `main()` —— 看一条 SIP 事务链怎么串（直线版）。
+3. `gb28181_device_stateful.cpp` 的 `main()` —— 看状态机版怎么用同一套信令函数做成常驻设备（对照 2，理解直线→状态机的演进）。
+4. `gb28181_sip_mock_server.cpp` 的 `main()` —— 看平台侧最小响应 + RTP 接收主循环。
+5. `print_rtp_packet_summary` -> `print_ps_payload_summary` -> `fu_a_reassembly_handle_packet` —— 看接收端怎么逐层拆。
+6. `gb28181_minimal_example.cpp` —— 看发送端三类 payload 和分片。
+7. `gb28181_module.cpp` —— 最后看字节级实现：SIP 文本、SDP、Digest MD5、PS/PES/PTS、jrtplib session。
 
-配套抓包：先跑 mock server + client 看 SIP 闭环，再跑 minimal_example 看 RTP/FU-A，最后 `ffplay gb28181_rx.h264` 验证接收重组闭环。
+配套抓包：先跑 mock server + client 看 SIP 闭环，再跑 stateful 看状态机常驻循环，再跑 minimal_example 看 RTP/FU-A，最后 `ffplay gb28181_rx.h264` 验证接收重组闭环。

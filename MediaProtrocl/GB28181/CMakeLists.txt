@@ -91,3 +91,13 @@ if (MSVC)
 endif()
 
 target_link_libraries(gb28181_sip_mock_server PRIVATE gb28181_module ws2_32)
+
+add_executable(gb28181_device_stateful
+    gb28181_device_stateful.cpp
+)
+
+if (MSVC)
+    target_compile_options(gb28181_device_stateful PRIVATE /utf-8)
+endif()
+
+target_link_libraries(gb28181_device_stateful PRIVATE gb28181_module ws2_32)

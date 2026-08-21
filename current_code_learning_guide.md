@@ -359,17 +359,17 @@ RTP 分片如何控制 marker/timestamp
 4. 媒体发送：PS/PES 打包、RTP 单包原语、通用字节分片、H.264 FU-A 语义分片。
 5. 媒体接收：RTP 头解析、payload 识别（PS/裸 H.264/FU-A）、PS 拆层（pack→PES→PTS→NALU）、**FU-A 重组状态机**（带丢包/乱序/超时检测和 8 槽重排序窗口）。
 6. 验证闭环：重组后的 NALU 经回调写入运行目录 `gb28181_rx.h264`（Annex-B 裸流），可用 `ffplay gb28181_rx.h264` 或 `ffmpeg -i gb28181_rx.h264 -f null -` 验证整条接收链路。
+7. 设备状态机骨架（`gb28181_device_stateful.cpp`）：常驻进程、八态迁移、select 事件循环、Keepalive 周期、指数退避重连、BYE 后回注册态可循环 INVITE、Expires:0 注销。
 
 逐函数能力清单、接收端状态机机制和输出文件说明见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md)。
 
 后续走向"能当生产设备用"还差（按优先级）：
 
-1. 设备状态机：把直线走完就退出的 client 改成常驻、事件驱动、重试/Keepalive 周期/断线重连。
-2. 真实媒体源：用真实编码器或 IPC SDK 取码流，替换固定 SPS/PPS/IDR 测试数据。
-3. RTCP：SR/RR 报文、丢包率/抖动统计、RTT、多流时钟同步（仓库尚无 RTCP 收发）。
-4. H.265 支持：FU 分片与重组（当前仅 H.264）。
-5. RTP over TCP：国标主动拉流 / 被动收流模式（当前仅 UDP）。
-6. 对接真实 GB28181 平台互操作测试（当前全部是 mock↔mock 自测）。
+1. 真实媒体源：用真实编码器或 IPC SDK 取码流，替换固定 SPS/PPS/IDR 测试数据（设备状态机骨架已落地于 `gb28181_device_stateful.cpp`，接入编码器即可）。
+2. RTCP：SR/RR 报文、丢包率/抖动统计、RTT、多流时钟同步（仓库尚无 RTCP 收发）。
+3. H.265 支持：FU 分片与重组（当前仅 H.264）。
+4. RTP over TCP：国标主动拉流 / 被动收流模式（当前仅 UDP）。
+5. 对接真实 GB28181 平台互操作测试（当前全部是 mock↔mock 自测，退避重连等路径代码已写对需真实平台验证）。
 
 生产设备状态机设计的具体路线见 [MediaProtrocl/gb28181_study.md](MediaProtrocl/gb28181_study.md) 第 14 节。
 
