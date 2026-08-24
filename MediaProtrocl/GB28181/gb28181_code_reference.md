@@ -406,3 +406,137 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 7. `gb28181_module.cpp` —— 最后看字节级实现：SIP 文本、SDP、Digest MD5、PS/PES/PTS、jrtplib session。
 
 配套抓包：先跑 mock server + client 看 SIP 闭环，再跑 stateful 看状态机常驻循环，再跑 minimal_example 看 RTP/FU-A，最后 `ffplay gb28181_rx.h264` 验证接收重组闭环。
+
+## 9. 设备状态机代码导读
+
+本章把 `gb28181_device_stateful.cpp` 按"功能块 → 函数 → 学习点"逐层拆开，配合源码阅读。运行方式见第 3.5 节，能力清单见第 7 节，本章只讲**代码内部怎么读**。
+
+### 9.1 核心思想：从直线流程到状态机
+
+`gb28181_device_stateful.cpp` 与 `gb28181_sip_register_client.cpp` 用的是**同一套信令函数**（都来自 `gb28181_module.h`），差别只在怎么组织执行流：
+
+| | 直线版 | 状态机版 |
+|---|---|---|
+| 执行流 | `main()` 一条直线：发→同步 recv→发→recv... | 事件循环：select 等事件→按当前状态解释→执行动作→切状态 |
+| 状态 | 隐含在代码执行位置 | 显式枚举，有名字 |
+| 超时 | 收不到就打印错误继续 | 有定时器，重试/退避/判掉线 |
+| 生命周期 | 走完退出 | 常驻，BYE 后能回注册态再 INVITE |
+
+理解这张表，就理解了"从学习 demo 到生产设备"的第一步本质：**把隐含的执行位置，改成显式状态 + 事件驱动**。
+
+### 9.2 状态枚举（`gb_device_state_t`）
+
+```
+IDLE  REGISTERING  AUTHENTICATING  REGISTERED
+INVITING  STREAMING  BYE_PENDING  DEREGISTERING
+```
+
+每个状态对应"我现在在等什么、下一步期望什么"。例如 `REGISTERING` = 已发无 auth REGISTER，正在等 401；`AUTHENTICATING` = 已发带 auth REGISTER，正在等 200。状态名本身就是文档。完整迁移图见 `gb28181_study.md` 第 14.2 节。
+
+### 9.3 上下文结构（`gb_device_ctx_t`）
+
+这是直线版没有的——把一条会话的全部运行时状态集中存起来。重点字段：
+
+| 字段 | 作用 | 为什么需要 |
+|---|---|---|
+| `state` | 当前状态 | 事件循环靠它分发 |
+| `cseq` | 单调递增 CSeq | 直线版 CSeq 写死，状态机每次发都要递增 |
+| `call_id_register/invite` | 事务标识 | 每个事务独立 Call-ID，便于对端配对 |
+| `to_tag` | 平台 200 OK 回的 tag | 后续 ACK/BYE 要带，直线版写死 `tag=mock` |
+| `challenge` | 401 缓存的鉴权参数 | 跨"收到 401 → 发 auth REGISTER"两步保存 |
+| `backoff_ms` / `state_deadline_ms` | 退避值 / 状态超时点 | 实现重连和超时判定的核心 |
+| `next_keepalive_ms` | 下次保活时间 | Keepalive 周期的定时器 |
+| `keepalive_misses` | 连续未收到 200 次数 | 到上限判掉线 |
+| `media_handle` | RTP 会话句柄 | STREAMING 期间持有，BYE 时释放 |
+| `invite_after_ms` | 注册后发起 INVITE 的时间点 | 让 REGISTERED 稳定一会再自动点播 |
+
+### 9.4 时间工具
+
+```
+now_ms()    跨平台毫秒墙钟（Win32 GetTickCount / POSIX clock_gettime）
+min_u64()   取两值较小者
+```
+
+状态机的所有定时都基于"墙钟毫秒 + deadline 点"，不依赖多线程。`now_ms()` 是整个事件循环的时间基准。
+
+### 9.5 SIP 报文构造（带参版本）
+
+这是和直线版最直接的对照学习点。直线版直接 `snprintf` 写死 CSeq/branch，状态机需要递增，所以自建带参版本：
+
+| 函数 | 对应直线版的什么 | 关键差异 |
+|---|---|---|
+| `make_branch()` | 直线版写死 `z9hG4bK-gb28181-register` | 用 `tag + cseq + now_ms()` 拼唯一 branch |
+| `build_register_no_auth()` | `gb28181_build_register` | CSeq/branch/Call-ID 由 ctx 控制 |
+| `build_register_with_auth()` | client 里手拼的第二次 REGISTER | Authorization 仍复用 `gb28181_build_digest_authorization` |
+| `build_invite_request()` | client 的 `build_invite_request` | 目标通道、CSeq 来自 ctx |
+| `build_ack_request()` / `build_bye_request()` | client 的同名函数 | 带上 `to_tag`（ctx 里存的平台 tag） |
+
+学习点：**信令文本构造完全复用，只是参数来源从"常量"换成"上下文字段"**。这是状态机不重写信令、只加状态结构的核心手法。
+
+### 9.6 状态迁移与动作
+
+每个 `enter_*` / `send_*` 函数做三件事：**执行动作 → 设定下一个 deadline → 切状态**。
+
+| 函数 | 做什么 | 学习点 |
+|---|---|---|
+| `enter_state()` | 切状态 + 打日志 | 所有状态切换都过这里，日志可追溯 |
+| `enter_idle_with_backoff()` | 关 socket + 算退避 + 设 deadline | 掉线重连入口：退避 `base << 1` 翻倍，封顶 |
+| `start_registering()` | （重）开 socket + 新 Call-ID + 发无 auth REGISTER | 退避到期或首次启动都走这里；socket 重建是关键 |
+| `send_register_with_auth()` | 用缓存 challenge 发带 auth REGISTER | 跨"收 401→发 auth"两步 |
+| `enter_registered()` | 重置退避 + 启动 Keepalive + 计划 INVITE | 注册成功后的稳态：保活 + 自动点播 |
+| `send_keepalive()` | 发 Keepalive，misses++ | 到 `KEEPALIVE_MISS_MAX` 判掉线转退避 |
+| `send_invite()` | 发 INVITE，进 INVITING | — |
+| `send_ack_and_start_media()` | 发 ACK + 发一包 demo PS | SIP 三步握手完成，媒体通道打开 |
+| `send_bye()` | 释放 media_handle + 发 BYE | 资源清理和信令绑定在一起 |
+| `extract_to_tag()` | 从 200 OK 的 To 头取 tag | 后续 ACK/BYE 要回带，这是 dialog 标识 |
+
+### 9.7 报文分发（`handle_incoming`）
+
+这是状态机的"大脑"。收到一条 SIP 报文后，按 `switch (ctx->state)` 分发：**同一个 200 OK，在不同状态含义不同**：
+
+- `AUTHENTICATING` 收到 200 → 注册成功 → `enter_registered`
+- `REGISTERED` 收到 200 → Keepalive 回执 → 清零 misses
+- `INVITING` 收到 200 → 会话接受 → 发 ACK + 开媒体
+- `BYE_PENDING` 收到 200 → 会话结束 → 回 `REGISTERED`（可再 INVITE）
+
+学习点：**报文的语义由"当前状态 + 报文内容"共同决定，不由收到顺序决定**。这正是状态机比直线流程强的本质——它能根据上下文解释同一条报文。
+
+### 9.8 超时处理（`handle_state_timeout`）
+
+每个状态有自己的超时动作，和 `handle_incoming` 对称：
+
+| 状态超时 | 动作 |
+|---|---|
+| IDLE | 退避到期 → `start_registering` |
+| REGISTERING | 无 401 → 重试，到上限转退避 |
+| AUTHENTICATING | 无 200 → 退回重发无 auth |
+| REGISTERED | 两类定时：keepalive 到点发保活 / invite_after 到点发 INVITE |
+| INVITING | 无 200 → 回 REGISTERED |
+| STREAMING | 停留时长到 → 发 BYE |
+| BYE_PENDING | 无 200 → 回 REGISTERED |
+
+REGISTERED 那段特别值得看：一个状态同时挂两个定时器（keepalive + invite_after），用 `min_u64` 取较早者作 deadline，到点再区分是哪个触发的。
+
+### 9.9 主循环（`main`）
+
+```
+select(sip_sock, timeout=距最近 deadline 的剩余)
+  可读 → recvfrom → handle_incoming
+  超时 → handle_state_timeout
+```
+
+学习点：
+
+- **单线程 select 复用 socket + 定时器**，不引入多线程就能"同时"收信令和守时
+- timeout 用"距最近 deadline 的剩余时间"算，IDLE 退避中无 socket 就 Sleep
+- DEREGISTERING 完成后 `invite_cycles_max = -1` 让循环退出——这是唯一的退出路径
+
+### 9.10 阅读顺序建议
+
+1. 先读状态枚举 + `gb_device_ctx_t`（理解"状态"和"上下文"是什么）
+2. 再读 `main` 主循环（理解事件驱动骨架）
+3. 再读 `handle_incoming`（理解"按状态解释报文"）
+4. 再读 `handle_state_timeout`（理解"按状态处理超时"）
+5. 最后逐个读 `enter_*` / `send_*` 动作函数（理解每个迁移怎么落地）
+6. 对照直线版 `gb28181_sip_register_client.cpp` 的 `main()`，看同样的事务链从直线变成状态机后差在哪
+
