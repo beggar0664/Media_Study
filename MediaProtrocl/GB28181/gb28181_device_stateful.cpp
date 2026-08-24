@@ -36,17 +36,24 @@
 /* 常量                                                                */
 /* ------------------------------------------------------------------ */
 
-/* 重试与退避（单位毫秒）。这些值偏小，是为了在 mock 上也能观察到循环行为。 */
-#define GB_REGISTER_RETRY_MAX 3        /* 单次注册尝试中无 auth 重发上限        */
-#define GB_REGISTER_TIMEOUT_MS 3000     /* 等 401 / 200 的单步超时               */
-#define GB_INVITE_TIMEOUT_MS 3000       /* 等 INVITE 200+SDP 的超时              */
-#define GB_BYE_TIMEOUT_MS 3000          /* 等 BYE 200 的超时                    */
-#define GB_BACKOFF_BASE_MS 1000         /* 指数退避初始值                       */
-#define GB_BACKOFF_MAX_MS 60000         /* 指数退避封顶                         */
-#define GB_KEEPALIVE_INTERVAL_MS 2000   /* 学习用保活周期（生产常为 60s）        */
-#define GB_KEEPALIVE_MISS_MAX 3         /* 连续未收到 200 的上限，到上限判掉线   */
-#define GB_STREAMING_HOLD_MS 3000       /* STREAMING 停留时长，演示一包媒体后 BYE */
-#define GB_INVITE_AFTER_MS 1000         /* REGISTERED 后多久自动发起 INVITE      */
+/*
+ * 重试与退避参数（单位毫秒）。
+ *
+ * 这些值都偏小，目的是在 mock 上也能在十几秒内观察到完整的"注册→保活→
+ * 点播→BYE→再循环"行为，不用等真实工程的分钟级周期。
+ * 生产环境里 KEEPALIVE 通常是 60s、退避更长、STREAMING 不主动 BYE。
+ * 改这些宏就能在"学习快"和"生产像"之间切换，不必动逻辑代码。
+ */
+#define GB_REGISTER_RETRY_MAX 3        /* REGISTERING 内无 auth 重发上限，到上限转退避重连 */
+#define GB_REGISTER_TIMEOUT_MS 3000     /* 等 401 / 200 的单步超时；到点判重试或转退避      */
+#define GB_INVITE_TIMEOUT_MS 3000       /* 等 INVITE 200+SDP 的超时；到点回 REGISTERED      */
+#define GB_BYE_TIMEOUT_MS 3000          /* 等 BYE 200 的超时；到点回 REGISTERED 强行收尾    */
+#define GB_BACKOFF_BASE_MS 1000         /* 指数退避初始值，掉线后第一次重连等 1s            */
+#define GB_BACKOFF_MAX_MS 60000         /* 指数退避封顶，避免长时间断网后重连风暴          */
+#define GB_KEEPALIVE_INTERVAL_MS 2000   /* 学习用保活周期（生产常为 60s），周期发 Keepalive */
+#define GB_KEEPALIVE_MISS_MAX 3         /* 连续未收到 200 的上限，到上限判掉线转退避重连   */
+#define GB_STREAMING_HOLD_MS 3000       /* STREAMING 停留时长，演示一包媒体后发 BYE         */
+#define GB_INVITE_AFTER_MS 1000         /* 注册成功后多久自动发 INVITE，让稳态先跑一会     */
 
 /* 演示用固定媒体数据，和 minimal_example 里的 demo H.264 一致。 */
 static const unsigned char g_demo_h264_annexb[] = {
@@ -63,15 +70,24 @@ static const unsigned char g_demo_h264_annexb[] = {
 /* 状态枚举                                                            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * 状态机的八个状态。每个状态回答"我现在在等什么、下一步期望什么"。
+ *
+ * 对照直线版 gb28181_sip_register_client.cpp：那里的"状态"是隐含在 main() 的
+ * 代码执行位置里的（走到哪一步就是什么状态），没有显式名字。这里抽成枚举，
+ * 是为了让事件循环能按状态分发，并且任何报文/超时都按当前状态解释——
+ * 例如同一个 200 OK，在 AUTHENTICATING 意味"注册成功"，在 INVITING 意味"会话接受"。
+ * 完整迁移图见 ../gb28181_study.md 第 14.2 节。
+ */
 typedef enum {
-    GB_STATE_IDLE = 0,        /* 初始 / 掉线重连入口                   */
-    GB_STATE_REGISTERING,     /* 已发 REGISTER(无auth)，等 401         */
-    GB_STATE_AUTHENTICATING,  /* 已发 REGISTER(带auth)，等 200         */
-    GB_STATE_REGISTERED,      /* 注册成功，Keepalive 周期运行          */
-    GB_STATE_INVITING,        /* 已发 INVITE，等 200+SDP               */
-    GB_STATE_STREAMING,       /* 已 ACK，媒体会话建立中                */
-    GB_STATE_BYE_PENDING,     /* 已发 BYE，等 200                      */
-    GB_STATE_DEREGISTERING    /* 已发 Expires:0 注销，等 200           */
+    GB_STATE_IDLE = 0,        /* 初始 / 掉线重连入口；退避计时结束后重新注册。直线版无此态，走完即退。 */
+    GB_STATE_REGISTERING,     /* 已发 REGISTER(无auth)，等 401 challenge。                 */
+    GB_STATE_AUTHENTICATING,  /* 已发 REGISTER(带auth)，等 200；收到 401/403 则鉴权失败转 IDLE。 */
+    GB_STATE_REGISTERED,      /* 注册成功稳态：跑 Keepalive 周期 + 自动发起 INVITE。直线版只发一次保活。 */
+    GB_STATE_INVITING,        /* 已发 INVITE，等 200+SDP；收到 486/603 被拒回 REGISTERED。   */
+    GB_STATE_STREAMING,       /* 已 ACK，媒体会话建立；停留到点后发 BYE。                  */
+    GB_STATE_BYE_PENDING,     /* 已发 BYE，等 200；收到后回 REGISTERED，可再 INVITE。      */
+    GB_STATE_DEREGISTERING    /* 已发 Expires:0 注销，等 200；收到后回 IDLE。mock 不支持，真实平台会回 200。 */
 } gb_device_state_t;
 
 static const char *state_name(gb_device_state_t s)
@@ -684,6 +700,22 @@ static void extract_to_tag(const gb28181_sip_message_t *msg, char *out, size_t o
 /* 报文分发：按当前状态解释收到的 SIP 报文                             */
 /* ------------------------------------------------------------------ */
 
+/*
+ * 状态机的"大脑"。收到一条 SIP 报文后，按 ctx->state 分发处理。
+ *
+ * 关键点：报文的语义由"当前状态 + 报文内容"共同决定，不由收到顺序决定。
+ * 最典型的例子是同一个 200 OK：
+ *   - AUTHENTICATING 收到 200 -> 注册成功，进 REGISTERED
+ *   - REGISTERED    收到 200 -> Keepalive 的回执，清零未达计数
+ *   - INVITING      收到 200 -> 会话被接受，发 ACK + 开媒体
+ *   - BYE_PENDING   收到 200 -> 会话结束，回 REGISTERED（可再 INVITE）
+ *
+ * 这正是状态机比直线流程强的本质：直线版只能按"发完等响应"的固定顺序走，
+ * 状态机能根据上下文解释同一条报文，并处理乱序/延迟/平台主动下发等情形。
+ *
+ * 除了按状态处理响应，还要应对平台主动下发的请求（MESSAGE/BYE），
+ * 在对应状态里回 200，不让它们破坏当前事务链。
+ */
 static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_len)
 {
     gb28181_sip_message_t msg;
@@ -890,6 +922,21 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
 /* 状态超时处理                                                         */
 /* ------------------------------------------------------------------ */
 
+/*
+ * 和 handle_incoming 对称：当 select 超时、当前状态的 deadline 到点时调用。
+ * 每个状态有自己的超时动作，和该状态"在等什么"对应：
+ *   - REGISTERING 超时 -> 还没收到 401，重发无 auth，到上限转退避
+ *   - AUTHENTICATING 超时 -> 还没收到 200，退回重发无 auth
+ *   - REGISTERED 超时 -> keepalive 周期到或 invite_after 到，分别触发
+ *   - STREAMING 超时 -> 停留时长到，发 BYE 主动收尾
+ *
+ * 直线版没有超时处理——recv 不到响应就打印错误继续往下走，是生产不能接受的。
+ * 状态机靠 deadline + 本函数实现"等不到就重试/退避/判掉线"。
+ *
+ * REGISTERED 那段尤其值得看：一个状态同时挂两个定时器（keepalive +
+ * invite_after），用 min_u64 取较早者作 deadline，到点在本函数里再区分
+ * 是哪个触发的，决定发保活还是发 INVITE。
+ */
 static void handle_state_timeout(gb_device_ctx_t *ctx)
 {
     switch (ctx->state) {
@@ -979,6 +1026,22 @@ static void handle_state_timeout(gb_device_ctx_t *ctx)
 /* 主循环                                                              */
 /* ------------------------------------------------------------------ */
 
+/*
+ * 事件循环主入口。
+ *
+ * 骨架是单线程 select：用"距最近 deadline 的剩余时间"作 select 超时，
+ * 一个线程同时守着 SIP socket 可读 和 各状态定时器。不引入多线程就能
+ * "同时"收信令和守时——这是替代直线版"发完同步 recv"的关键。
+ *
+ * 循环两件事：
+ *   - select 返回可读 -> recvfrom -> handle_incoming（按状态解释报文）
+ *   - select 返回超时 -> handle_state_timeout（按状态处理 deadline）
+ *
+ * 唯一退出路径：DEREGISTERING 完成后置 invite_cycles_max=-1，主循环检测到退出。
+ * 生产环境通常常驻不退出，这里给循环上限是为了 demo 能自动停。
+ *
+ * 命令行参数：max_cycles，0=常驻到 Ctrl+C，>0=N 次 INVITE/BYE 循环后注销。
+ */
 int main(int argc, char **argv)
 {
     gb_device_ctx_t ctx;
