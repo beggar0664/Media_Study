@@ -94,46 +94,53 @@ static const char *state_name(gb_device_state_t s)
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    gb28181_config_t cfg;
+    gb28181_config_t cfg;            /* 本机/平台/鉴权等静态配置，贯穿整个生命周期     */
 
-    int sip_sock;
-    struct sockaddr_in remote_addr;
+    int sip_sock;                    /* SIP UDP socket；掉线重连时会被关闭重建         */
+    struct sockaddr_in remote_addr;  /* 平台 SIP 地址，sendto 目标                       */
 
-    gb_device_state_t state;
+    gb_device_state_t state;         /* 当前状态；事件循环靠它分发 handle_incoming/timeout */
 
-    /* SIP 事务标识：状态机里 CSeq 单调递增，branch/Call-ID 每个事务独立。 */
-    unsigned int cseq;
-    char call_id_register[64];
-    char call_id_invite[64];
+    /* SIP 事务标识：状态机里 CSeq 单调递增（直线版写死），branch/Call-ID 每个事务
+     * 独立，便于对端把请求和响应配对。 */
+    unsigned int cseq;               /* 单调递增 CSeq，每次发新请求都 +1                */
+    char call_id_register[64];      /* 注册事务 Call-ID，每次注册/注销事务独立         */
+    char call_id_invite[64];        /* INVITE 事务 Call-ID，标识一条点播会话 dialog    */
 
-    /* 平台在 200 OK(INVITE) 里回的 To tag，后续 ACK/BYE 要带上。 */
+    /* 平台在 200 OK(INVITE) 的 To 头里回的 tag，后续 ACK/BYE 必须带上。
+     * 直线版写死 tag=mock，状态机要从真实响应里提取。 */
     char to_tag[64];
 
-    /* 401 challenge 缓存，供带 auth 的 REGISTER 复用。 */
+    /* 401 challenge 缓存：收到 401 后解析出 realm/nonce 等，供下一步发带 auth
+     * 的 REGISTER 复用。跨"收 401 → 发 auth"两步保存。 */
     gb28181_digest_challenge_t challenge;
-    int have_challenge;
+    int have_challenge;              /* 是否已缓存可用 challenge，控制能否发 auth REGISTER */
 
-    /* 重试 / 退避 */
-    int register_retries;            /* REGISTERING 状态内无 auth 重试计数   */
-    int backoff_ms;                  /* 当前指数退避值                       */
-    unsigned long long state_deadline_ms;  /* 当前状态超时点（0=不限时）   */
-    unsigned long long next_keepalive_ms;  /* 下次发 Keepalive 的墙钟点    */
-    unsigned long long invite_after_ms;    /* REGISTERED 后发起 INVITE 的墙钟点 */
-    int keepalive_misses;            /* 连续未收到 200 的次数                */
+    /* 重试 / 退避 / 定时：状态机所有定时都基于"墙钟毫秒 + deadline 点"，
+     * 不依赖多线程。每个状态设自己的 deadline，select 用最近 deadline 作超时。 */
+    int register_retries;            /* REGISTERING 状态内无 auth 重试计数，到上限转退避 */
+    int backoff_ms;                  /* 当前指数退避值，掉线后 1s->2s->4s 翻倍封顶 60s   */
+    unsigned long long state_deadline_ms;  /* 当前状态超时点（0=不限时），到点跑 timeout */
+    unsigned long long next_keepalive_ms;  /* 下次发 Keepalive 的墙钟点，保活周期定时器    */
+    unsigned long long invite_after_ms;    /* 注册成功后多久自动发 INVITE，让稳态先跑一会  */
+    int keepalive_misses;            /* 连续未收到 200 的次数，到 KEEPALIVE_MISS_MAX 判掉线 */
 
-    /* INVITE dialog 媒体参数 */
-    unsigned int ssrc;
-    char invite_target[64];          /* 从 Catalog 选的通道号                */
+    /* INVITE dialog 媒体参数：协商出的媒体通道参数。 */
+    unsigned int ssrc;               /* RTP 同步源标识，INVITE 的 SDP 和 RTP 头要用同一个 */
+    char invite_target[64];          /* 从 Catalog 选的通道号，INVITE 的 Request-URI 目标 */
 
-    /* 媒体句柄，STREAMING 期间持有 */
+    /* 媒体句柄：STREAMING 期间持有 jrtplib RTP 会话，BYE 时必须释放。
+     * 把资源清理和信令动作绑定在一起，避免会话泄漏。 */
     gb28181_handle_t media_handle;
-    unsigned long long streaming_until_ms;  /* STREAMING 停留到何时        */
+    unsigned long long streaming_until_ms;  /* STREAMING 停留到何时，到点发 BYE 结束会话      */
 
-    /* 演示控制：多少次 INVITE/BYE 循环后停止。0=不限，Ctrl+C 退出。 */
+    /* 演示控制：多少次 INVITE/BYE 循环后停止。0=不限，Ctrl+C 退出。
+     * 生产环境这里通常常驻不退出。 */
     int invite_cycles_done;
     int invite_cycles_max;
 
-    /* 退避中是否要重新初始化 socket（掉线重连路径）。 */
+    /* 退避中是否要重新初始化 socket（掉线重连路径）。
+     * IDLE 退避到期后 start_registering 会据此重建 socket。 */
     int need_resocket;
 } gb_device_ctx_t;
 
