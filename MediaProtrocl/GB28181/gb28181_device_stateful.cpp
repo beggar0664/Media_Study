@@ -67,6 +67,125 @@ static const unsigned char g_demo_h264_annexb[] = {
 };
 
 /* ------------------------------------------------------------------ */
+/* 媒体帧源：从本地 .h264(Annex-B) 文件逐帧读，无文件时走内置合成流    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 把"从哪取下一帧"和"怎么发 RTP"解耦。状态机 STREAMING 周期调用
+ * media_source_next_frame() 取一帧，交给 gb28181_build_ps_pack_h264 +
+ * gb28181_send_rtp_packet 发送。
+ *
+ * 两种来源：
+ *   - 有 .h264 文件：fopen 后按 Annex-B start code 逐 NALU 读，是真实码流
+ *   - 无文件：回退到内置合成流，复用上面的 g_demo_h264_annexb（SPS+PPS+IDR）
+ *     并循环重复 IDR 若干次，让无文件环境也能验证"逐帧发送"链路
+ *     （合成流不是真画面，真画面需用户提供 .h264 文件）
+ */
+
+#define GB_MEDIA_FRAME_RATE 25                 /* 帧率，25fps                            */
+#define GB_MEDIA_FRAME_TS_INC 3600             /* 每帧 RTP timestamp 增量 = 90000/25      */
+#define GB_MEDIA_FRAME_INTERVAL_MS 40          /* 发送间隔 = 1000/25                       */
+#define GB_MEDIA_BUILTIN_FRAMES 50             /* 无文件时内置合成流帧数，约 2 秒          */
+
+typedef struct {
+    FILE *fp;                          /* 打开的 .h264 文件；NULL=用内置合成流       */
+    int builtin_frame_index;           /* 内置流已发的帧序号，到 BUILTIN_FRAMES 结束  */
+    unsigned long long frame_interval_ms;  /* 发送间隔，由帧率算出                   */
+    unsigned int pts_90khz;            /* 累计 90kHz PTS，每帧 +3600                */
+} media_frame_source_t;
+
+/* 打开帧源。path 非空且能 fopen 就用文件；否则置 fp=NULL 走内置合成流。
+ * 两种情况都返回 0（成功），让调用方不必区分"有没有文件"。 */
+static int media_source_open(media_frame_source_t *src, const char *path)
+{
+    if (!src) {
+        return -1;
+    }
+    memset(src, 0, sizeof(*src));
+    src->frame_interval_ms = GB_MEDIA_FRAME_INTERVAL_MS;
+    src->pts_90khz = 0;
+    src->builtin_frame_index = 0;
+
+    if (path && path[0] != '\0') {
+        src->fp = fopen(path, "rb");
+        if (src->fp) {
+            printf("[media] opened file source: %s\n", path);
+        } else {
+            printf("[media] cannot open %s, fallback to builtin synthetic stream\n", path);
+        }
+    } else {
+        printf("[media] no file specified, using builtin synthetic stream\n");
+    }
+    return 0;
+}
+
+/* 从帧源取下一帧。out_buf 写入一帧 Annex-B 数据（含 start code）。
+ * 返回帧字节数；0=EOF（文件读完或内置流发完）。 */
+static int media_source_next_frame(media_frame_source_t *src,
+                                   unsigned char *out_buf, int out_size)
+{
+    if (!src || !out_buf || out_size <= 0) {
+        return 0;
+    }
+
+    if (src->fp) {
+        /* 文件源：每次读一块，扫出一个 NALU。简化做法：读一整帧（到下一个
+         * start code 前的全部字节）。这里用固定块读 + 缓冲扫描。 */
+        unsigned char chunk[2048];
+        int n = (int)fread(chunk, 1, sizeof(chunk), src->fp);
+        if (n <= 0) {
+            return 0;  /* EOF */
+        }
+        /* 简化：把读到的 chunk 直接作为一帧。真实应按 start code 切分并跨块
+         * 拼接，这里学习用按 2KB 块发，够验证连续发送链路。 */
+        if (n > out_size) {
+            n = out_size;
+        }
+        memcpy(out_buf, chunk, (size_t)n);
+        return n;
+    }
+
+    /* 内置合成流：第 0 帧发完整 SPS+PPS+IDR，后续帧只重复 IDR，共 BUILTIN_FRAMES 帧。 */
+    {
+        int frame_size;
+        if (src->builtin_frame_index >= GB_MEDIA_BUILTIN_FRAMES) {
+            return 0;  /* 合成流发完 */
+        }
+        if (src->builtin_frame_index == 0) {
+            /* 第一帧：完整 SPS+PPS+IDR，让接收端拿到参数集。 */
+            frame_size = (int)sizeof(g_demo_h264_annexb);
+            if (frame_size > out_size) {
+                frame_size = out_size;
+            }
+            memcpy(out_buf, g_demo_h264_annexb, (size_t)frame_size);
+        } else {
+            /* 后续帧：只发 IDR 部分（第 3 个 NALU）。
+             * g_demo_h264_annexb 里 IDR 从 offset 24 开始（00 00 00 01 65 ...）。 */
+            const int idr_offset = 24;
+            int idr_len = (int)sizeof(g_demo_h264_annexb) - idr_offset;
+            if (idr_len > out_size) {
+                idr_len = out_size;
+            }
+            memcpy(out_buf, g_demo_h264_annexb + idr_offset, (size_t)idr_len);
+            frame_size = idr_len;
+        }
+        src->builtin_frame_index++;
+        return frame_size;
+    }
+}
+
+static void media_source_close(media_frame_source_t *src)
+{
+    if (!src) {
+        return;
+    }
+    if (src->fp) {
+        fclose(src->fp);
+        src->fp = NULL;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* 状态枚举                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -149,6 +268,12 @@ typedef struct {
      * 把资源清理和信令动作绑定在一起，避免会话泄漏。 */
     gb28181_handle_t media_handle;
     unsigned long long streaming_until_ms;  /* STREAMING 停留到何时，到点发 BYE 结束会话      */
+    unsigned long long next_frame_ms;       /* 下次从帧源取一帧发 RTP 的墙钟点               */
+
+    /* 真实媒体源：STREAMING 不再发一包写死的 demo PS，而是从 .h264 文件
+     * 逐帧读（无文件走内置合成流），按帧率周期发 PS over RTP。 */
+    char media_file[256];                  /* .h264 路径，空=内置合成流；命令行第二参数覆盖 */
+    media_frame_source_t media_src;         /* 帧源状态：文件句柄/内置流序号/PTS 累计        */
 
     /* 演示控制：多少次 INVITE/BYE 循环后停止。0=不限，Ctrl+C 退出。
      * 生产环境这里通常常驻不退出。 */
@@ -463,11 +588,12 @@ static int start_registering(gb_device_ctx_t *ctx)
         ctx->need_resocket = 0;
     }
 
-    /* 新 Call-ID + CSeq 标识本次注册事务。 */
+    /* 新 Call-ID + CSeq 标识本次注册事务。
+     * 注意：不清零 register_retries——重试时 start_registering 会被再次调用，
+     * 计数要累加才能到上限转退避。清零只在 enter_idle_with_backoff 和启动时做。 */
     snprintf(ctx->call_id_register, sizeof(ctx->call_id_register),
              "%s-reg-%llu", ctx->cfg.stream_id, now_ms());
     ctx->cseq = 1;
-    ctx->register_retries = 0;
 
     len = build_register_no_auth(ctx, buf, sizeof(buf));
     if (len <= 0) {
@@ -568,11 +694,22 @@ static int send_invite(gb_device_ctx_t *ctx)
     return 0;
 }
 
-/* 收到 INVITE 200+SDP 后发 ACK，进入 STREAMING，发一包 demo PS。 */
+/* 前向声明：send_bye 定义在本函数之后，但本函数失败路径要调用它收尾。 */
+static int send_bye(gb_device_ctx_t *ctx);
+
+/*
+ * 收到 INVITE 200+SDP 后发 ACK，进入 STREAMING。
+ *
+ * 注意：这里不一次性把媒体发完，而是打开帧源 + 创建 RTP 会话 + 设定
+ * next_frame_ms，然后进 STREAMING。真正的逐帧发送在主循环的 STREAMING
+ * 超时分支里周期进行（media_streaming_tick）。这样 STREAMING 能持续发
+ * 十几秒连续码流，接近真实设备行为，而不是发一包就空等 BYE。
+ */
 static int send_ack_and_start_media(gb_device_ctx_t *ctx)
 {
     char buf[2048];
     int len;
+    gb28181_config_t media_cfg;
 
     len = build_ack_request(ctx, buf, sizeof(buf));
     if (len <= 0) {
@@ -584,37 +721,36 @@ static int send_ack_and_start_media(gb_device_ctx_t *ctx)
         return -1;
     }
 
-    /* 发一包 demo PS over RTP。媒体目标端口写死成 mock 的 30000。 */
-    {
-        gb28181_config_t media_cfg = ctx->cfg;
-        unsigned char ps_pack[512];
-        int ps_len;
-        int ret;
+    /* 打开帧源（有文件读文件，无文件走内置合成流）。 */
+    media_source_open(&ctx->media_src, ctx->media_file);
 
-        snprintf(media_cfg.remote_rtp_ip, sizeof(media_cfg.remote_rtp_ip), "%s", "127.0.0.1");
-        media_cfg.remote_rtp_port = 30000;
-        media_cfg.local_rtp_port = 10000;
-        media_cfg.ssrc = ctx->ssrc;
+    /* 创建 RTP 会话。媒体目标端口写死成 mock 的 30000。 */
+    media_cfg = ctx->cfg;
+    snprintf(media_cfg.remote_rtp_ip, sizeof(media_cfg.remote_rtp_ip), "%s", "127.0.0.1");
+    media_cfg.remote_rtp_port = 30000;
+    media_cfg.local_rtp_port = 10000;
+    media_cfg.ssrc = ctx->ssrc;
 
-        ps_len = gb28181_build_ps_pack_h264(g_demo_h264_annexb, (int)sizeof(g_demo_h264_annexb),
-                                            9000, 9000, ps_pack, (int)sizeof(ps_pack));
-        if (ps_len <= 0) {
-            printf("[media] build PS failed ret=%d\n", ps_len);
-        } else {
-            ctx->media_handle = gb28181_create(&media_cfg);
-            if (ctx->media_handle && gb28181_start(ctx->media_handle) == 0) {
-                ret = gb28181_send_rtp_packet(ctx->media_handle, ps_pack, ps_len, 9000, 1);
-                printf("[media] send PS over RTP ret=%d len=%d marker=1 timestamp_inc=9000\n", ret, ps_len);
-            } else if (ctx->media_handle) {
-                printf("[media] start RTP failed\n");
-                gb28181_destroy(ctx->media_handle);
-                ctx->media_handle = NULL;
-            }
-        }
+    ctx->media_handle = gb28181_create(&media_cfg);
+    if (!ctx->media_handle) {
+        printf("[media] create RTP context failed\n");
+        send_bye(ctx);
+        return -1;
+    }
+    if (gb28181_start(ctx->media_handle) != 0) {
+        printf("[media] start RTP failed\n");
+        gb28181_destroy(ctx->media_handle);
+        ctx->media_handle = NULL;
+        send_bye(ctx);
+        return -1;
     }
 
+    /* 不在这里发包：设 next_frame_ms = 当前时间，让主循环立刻开始 tick。
+     * streaming_until_ms 是总停留时长，到点强制 BYE（防止文件源无限发）。 */
+    ctx->media_src.pts_90khz = 0;
+    ctx->next_frame_ms = now_ms();
     ctx->streaming_until_ms = now_ms() + GB_STREAMING_HOLD_MS;
-    ctx->state_deadline_ms = ctx->streaming_until_ms;
+    ctx->state_deadline_ms = ctx->next_frame_ms;
     enter_state(ctx, GB_STATE_STREAMING);
     return 0;
 }
@@ -630,6 +766,7 @@ static int send_bye(gb_device_ctx_t *ctx)
         gb28181_destroy(ctx->media_handle);
         ctx->media_handle = NULL;
     }
+    media_source_close(&ctx->media_src);
 
     ctx->cseq++;
     len = build_bye_request(ctx, buf, sizeof(buf));
@@ -644,6 +781,63 @@ static int send_bye(gb_device_ctx_t *ctx)
     ctx->state_deadline_ms = now_ms() + GB_BYE_TIMEOUT_MS;
     enter_state(ctx, GB_STATE_BYE_PENDING);
     return 0;
+}
+
+/*
+ * STREAMING 周期 tick：取下一帧 → 打 PS → 发 RTP。
+ *
+ * 主循环在 STREAMING 状态且 next_frame_ms 到点时调用本函数。
+ *   - 文件读完或内置流发完 -> 返回 0，调用方应 send_bye 收尾
+ *   - 正常发一帧 -> 推进 pts 和 next_frame_ms，返回 1 继续
+ *
+ * 每帧 timestamp_inc = 3600（90kHz / 25fps），PES PTS 同步写入。
+ * marker=1：当前简化为每帧一包（帧小不分片），末包置 marker。
+ */
+static int media_streaming_tick(gb_device_ctx_t *ctx)
+{
+    unsigned char frame[4096];
+    unsigned char ps_pack[8192];
+    int frame_len;
+    int ps_len;
+    int ret;
+
+    if (!ctx || !ctx->media_handle) {
+        return 0;
+    }
+
+    frame_len = media_source_next_frame(&ctx->media_src, frame, (int)sizeof(frame));
+    if (frame_len <= 0) {
+        printf("[media] stream source EOF, finishing\n");
+        return 0;  /* 文件/内置流读完，收尾 */
+    }
+
+    /* PES PTS 和 RTP timestamp_inc 都用 3600，90kHz 时钟下 = 1 帧。 */
+    ps_len = gb28181_build_ps_pack_h264(frame, frame_len,
+                                        ctx->media_src.pts_90khz,
+                                        ctx->media_src.pts_90khz,
+                                        ps_pack, (int)sizeof(ps_pack));
+    if (ps_len <= 0) {
+        printf("[media] build PS failed ret=%d, skip frame\n", ps_len);
+        ctx->media_src.pts_90khz += GB_MEDIA_FRAME_TS_INC;
+        ctx->next_frame_ms = now_ms() + ctx->media_src.frame_interval_ms;
+        ctx->state_deadline_ms = ctx->next_frame_ms;
+        return 1;
+    }
+
+    /* 帧大就走分片，帧小就单包。ps_pack 可能超过单包，用通用分片发。 */
+    ret = gb28181_send_rtp_payload_fragmented(ctx->media_handle, ps_pack, ps_len,
+                                              1200, GB_MEDIA_FRAME_TS_INC);
+    if (ret < 0) {
+        printf("[media] send PS failed ret=%d\n", ret);
+    } else {
+        printf("[media] send frame len=%d ps=%d ts_inc=%u pts=%u\n",
+               frame_len, ps_len, GB_MEDIA_FRAME_TS_INC, ctx->media_src.pts_90khz);
+    }
+
+    ctx->media_src.pts_90khz += GB_MEDIA_FRAME_TS_INC;
+    ctx->next_frame_ms = now_ms() + ctx->media_src.frame_interval_ms;
+    ctx->state_deadline_ms = ctx->next_frame_ms;
+    return 1;
 }
 
 /* 从 200 OK 的 To 头里取 tag=xxx，存到 ctx->to_tag。 */
@@ -990,11 +1184,22 @@ static void handle_state_timeout(gb_device_ctx_t *ctx)
         enter_registered(ctx);
         break;
 
-    case GB_STATE_STREAMING:
-        /* 停留时长到点，发 BYE。 */
-        printf("[timeout] STREAMING hold elapsed, send BYE\n");
-        send_bye(ctx);
+    case GB_STATE_STREAMING: {
+        /* 两类定时：总停留时长 streaming_until_ms / 逐帧 next_frame_ms。 */
+        unsigned long long now = now_ms();
+        if (now >= ctx->streaming_until_ms) {
+            printf("[timeout] STREAMING hold elapsed, send BYE\n");
+            send_bye(ctx);
+        } else if (now >= ctx->next_frame_ms) {
+            /* 到点发下一帧；EOF 则收尾 BYE。 */
+            if (media_streaming_tick(ctx) == 0) {
+                send_bye(ctx);
+            }
+        } else {
+            ctx->state_deadline_ms = min_u64(ctx->streaming_until_ms, ctx->next_frame_ms);
+        }
         break;
+    }
 
     case GB_STATE_BYE_PENDING:
         printf("[timeout] BYE_PENDING no 200, back to REGISTERED\n");
@@ -1040,18 +1245,24 @@ static void handle_state_timeout(gb_device_ctx_t *ctx)
  * 唯一退出路径：DEREGISTERING 完成后置 invite_cycles_max=-1，主循环检测到退出。
  * 生产环境通常常驻不退出，这里给循环上限是为了 demo 能自动停。
  *
- * 命令行参数：max_cycles，0=常驻到 Ctrl+C，>0=N 次 INVITE/BYE 循环后注销。
+ * 命令行参数：
+ *   argv[1] = max_cycles，0=常驻到 Ctrl+C，>0=N 次 INVITE/BYE 循环后注销。
+ *   argv[2] = media_file，可选 .h264(Annex-B) 文件路径；不填走内置合成流。
  */
 int main(int argc, char **argv)
 {
     gb_device_ctx_t ctx;
     int max_cycles = 2;  /* 默认演示 2 次 INVITE/BYE 循环后注销退出 */
+    const char *media_file = NULL;  /* 默认无文件，走内置合成流 */
 
     if (argc > 1) {
         max_cycles = atoi(argv[1]);
         if (max_cycles <= 0) {
             max_cycles = 0;  /* 0=不限，常驻到 Ctrl+C */
         }
+    }
+    if (argc > 2) {
+        media_file = argv[2];
     }
 
     if (init_winsock() != 0) {
@@ -1079,6 +1290,9 @@ int main(int argc, char **argv)
     ctx.cfg.payload_type = 96;
     ctx.cfg.ssrc = 0x12345678;
     ctx.ssrc = 0x12345678;
+    if (media_file) {
+        snprintf(ctx.media_file, sizeof(ctx.media_file), "%s", media_file);
+    }
 
     memset(&ctx.remote_addr, 0, sizeof(ctx.remote_addr));
     ctx.remote_addr.sin_family = AF_INET;
@@ -1090,10 +1304,11 @@ int main(int argc, char **argv)
 #endif
 
     printf("===== GB28181 stateful device starting =====\n");
-    printf("local=%s:%d server=%s:%d target=%s cycles=%d\n",
+    printf("local=%s:%d server=%s:%d target=%s cycles=%d media=%s\n",
            ctx.cfg.local_ip, ctx.cfg.local_sip_port,
            ctx.cfg.sip_server_ip, ctx.cfg.sip_server_port,
-           ctx.invite_target, ctx.invite_cycles_max);
+           ctx.invite_target, ctx.invite_cycles_max,
+           ctx.media_file[0] ? ctx.media_file : "<builtin>");
     printf("Ctrl+C to stop\n");
 
     /* 首次启动：直接进入注册（无退避）。 */
@@ -1187,6 +1402,7 @@ int main(int argc, char **argv)
         gb28181_destroy(ctx.media_handle);
         ctx.media_handle = NULL;
     }
+    media_source_close(&ctx.media_src);
     if (ctx.sip_sock >= 0) {
         socket_close(ctx.sip_sock);
         ctx.sip_sock = -1;

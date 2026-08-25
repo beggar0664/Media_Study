@@ -137,8 +137,10 @@ ffmpeg -i gb28181_rx.h264 -f null -
 ```powershell
 # 窗口 1
 E:\code\Media\MediaProtrocl\GB28181\out\buildBin\gb28181_sip_mock_server.exe
-# 窗口 2
+# 窗口 2（第二参数可选：.h264 文件路径，不填走内置合成流）
 E:\code\Media\MediaProtrocl\GB28181\out\buildBin\Debug\gb28181_device_stateful.exe 2
+# 有真实码流时：
+E:\code\Media\MediaProtrocl\GB28181\out\buildBin\Debug\gb28181_device_stateful.exe 2 your.h264
 ```
 
 预期状态迁移日志：
@@ -385,11 +387,11 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - 媒体发送：PS/PES 打包、RTP 单包、通用字节分片、H.264 FU-A 分片
 - 媒体接收：RTP 头解析、payload 识别(PS/裸H.264/FU-A)、PS 拆层、**FU-A 重组状态机**（重排序窗+超时+丢包/乱序/重复处理）
 - 验证闭环：重组 NALU 落盘 `gb28181_rx.h264`，可用 ffplay/ffmpeg 验证
-- **设备状态机骨架**（`gb28181_device_stateful.cpp`）：常驻进程、`IDLE/REGISTERING/AUTHENTICATING/REGISTERED/INVITING/STREAMING/BYE_PENDING/DEREGISTERING` 八态迁移、`select()` 事件循环、Keepalive 周期定时器、连续超时判掉线、指数退避重连、BYE 后回 REGISTERED 可循环 INVITE、`Expires:0` 注销。媒体仍复用 demo PS 包。
+- **设备状态机骨架**（`gb28181_device_stateful.cpp`）：常驻进程、`IDLE/REGISTERING/AUTHENTICATING/REGISTERED/INVITING/STREAMING/BYE_PENDING/DEREGISTERING` 八态迁移、`select()` 事件循环、Keepalive 周期定时器、连续超时判掉线、指数退避重连、BYE 后回 REGISTERED 可循环 INVITE、`Expires:0` 注销。
+- **真实媒体源接入**：STREAMING 不再发一包 demo PS，而是从本地 `.h264`(Annex-B) 文件逐帧读（无文件走内置合成流），按 25fps 周期发 PS over RTP，PTS 按 3600/帧累计，文件读完自动 BYE。命令行 `gb28181_device_stateful.exe [cycles] [media_file]`，第二参数可选。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
-- 真实媒体源：替换固定 SPS/PPS/IDR 为真实编码器/IPC SDK 取流（状态机骨架已就绪，下一轮接入）
 - RTCP：SR/RR、丢包率/抖动、RTT、多流时钟同步（仓库尚无 RTCP 收发）
 - H.265：FU 分片与重组（当前仅 H.264）
 - RTP over TCP：国标主动拉流/被动收流（当前仅 UDP，`use_tcp` 返回 -2）

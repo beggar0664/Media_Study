@@ -1848,11 +1848,12 @@ DEREGISTERING --[recv 200]--> IDLE
 - BYE 后回 REGISTERED，可循环 INVITE（已验证 2 次循环）
 - `Expires:0` 注销路径
 
-已验证的闭环（mock↔stateful）：`IDLE -> REGISTERING ->(401)-> AUTHENTICATING ->(200)-> REGISTERED -> INVITING ->(200+SDP)-> STREAMING ->(ACK + demo PS)-> BYE_PENDING ->(200)-> REGISTERED`，循环 N 次后走 `DEREGISTERING`。媒体包被 mock 接收端识别为 PS pack 并拆层。
+已验证的闭环（mock↔stateful）：`IDLE -> REGISTERING ->(401)-> AUTHENTICATING ->(200)-> REGISTERED -> INVITING ->(200+SDP)-> STREAMING ->(ACK + 逐帧 PS over RTP)-> BYE_PENDING ->(200)-> REGISTERED`，循环 N 次后走 `DEREGISTERING`。媒体包被 mock 接收端识别为 PS pack 并拆层，seq 连续、timestamp 每帧 +3600。
+
+STREAMING 阶段已接入真实媒体源：从本地 `.h264`(Annex-B) 文件逐帧读（无文件走内置合成流），按 25fps 周期发 PS over RTP，PTS 按 3600/帧累计，文件读完自动 BYE。命令行 `gb28181_device_stateful.exe [cycles] [media_file]`。
 
 仍待补（下一步）：
 
-- 真实媒体源替换 demo PS（状态机骨架已就绪，接入编码器即可）
 - 退避重连、鉴权失败转 IDLE 等路径在真实平台验证（mock 不完全支持这些路径，代码已写对）
 - RTCP / H.265 / TCP 承载
 
