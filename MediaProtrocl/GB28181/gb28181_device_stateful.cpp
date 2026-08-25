@@ -52,7 +52,7 @@
 #define GB_BACKOFF_MAX_MS 60000         /* 指数退避封顶，避免长时间断网后重连风暴          */
 #define GB_KEEPALIVE_INTERVAL_MS 2000   /* 学习用保活周期（生产常为 60s），周期发 Keepalive */
 #define GB_KEEPALIVE_MISS_MAX 3         /* 连续未收到 200 的上限，到上限判掉线转退避重连   */
-#define GB_STREAMING_HOLD_MS 3000       /* STREAMING 停留时长，演示一包媒体后发 BYE         */
+#define GB_STREAMING_HOLD_MS 7000       /* STREAMING 停留时长，够 RTCP SR 周期发一次 */
 #define GB_INVITE_AFTER_MS 1000         /* 注册成功后多久自动发 INVITE，让稳态先跑一会     */
 
 /* 演示用固定媒体数据，和 minimal_example 里的 demo H.264 一致。 */
@@ -85,7 +85,7 @@ static const unsigned char g_demo_h264_annexb[] = {
 #define GB_MEDIA_FRAME_RATE 25                 /* 帧率，25fps                            */
 #define GB_MEDIA_FRAME_TS_INC 3600             /* 每帧 RTP timestamp 增量 = 90000/25      */
 #define GB_MEDIA_FRAME_INTERVAL_MS 40          /* 发送间隔 = 1000/25                       */
-#define GB_MEDIA_BUILTIN_FRAMES 50             /* 无文件时内置合成流帧数，约 2 秒          */
+#define GB_MEDIA_BUILTIN_FRAMES 150            /* 无文件时内置合成流帧数，约 6 秒，够发 RTCP SR */
 
 typedef struct {
     FILE *fp;                          /* 打开的 .h264 文件；NULL=用内置合成流       */
@@ -832,6 +832,16 @@ static int media_streaming_tick(gb_device_ctx_t *ctx)
     } else {
         printf("[media] send frame len=%d ps=%d ts_inc=%u pts=%u\n",
                frame_len, ps_len, GB_MEDIA_FRAME_TS_INC, ctx->media_src.pts_90khz);
+    }
+
+    /* 每隔 25 帧（约 1 秒）主动发一个 RTCP APP，验证 RTCP 通路。
+     * jrtplib 默认按间隔发 SR，但单向 sender 无 RR 时可能不发；
+     * 这里显式触发，确保 mock 30001 能看到 RTCP。
+     * 注意 RTCP APP 的 appdata 长度必须是 4 的倍数，否则 jrtplib 返回 -36。 */
+    if ((ctx->media_src.builtin_frame_index % 25) == 0) {
+        unsigned char appname[4] = {'g', 'b', '2', '8'};
+        int rret = gb28181_send_rtcp_app(ctx->media_handle, 0, appname, "rtctest8", 8);
+        printf("[media] send RTCP APP ret=%d (frame %d)\n", rret, ctx->media_src.builtin_frame_index);
     }
 
     ctx->media_src.pts_90khz += GB_MEDIA_FRAME_TS_INC;

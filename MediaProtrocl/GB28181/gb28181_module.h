@@ -141,6 +141,14 @@ int gb28181_build_digest_authorization(const gb28181_config_t *config,
 int gb28181_get_local_rtp_port(gb28181_handle_t handle, int *port_out);
 int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out);
 
+/* 显式发送一个 RTCP APP 报文。用于在没有 receiver 报告时也能主动发 RTCP，
+ * 验证 RTCP 通路。subtype/name/appdata 由调用方指定，jrtplib 负责封 RTCP 头。 */
+int gb28181_send_rtcp_app(gb28181_handle_t handle,
+                          unsigned char subtype,
+                          const unsigned char name[4],
+                          const void *appdata,
+                          int appdata_len);
+
 /* 直接发送一包 RTP payload。 */
 int gb28181_send_rtp_packet(gb28181_handle_t handle, const void *payload, int payload_size, unsigned int timestamp_inc, int marker);
 /* 按 max_payload_size 做简单分片发送，当前主要用于 PS over RTP。 */

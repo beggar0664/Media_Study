@@ -389,10 +389,11 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - 验证闭环：重组 NALU 落盘 `gb28181_rx.h264`，可用 ffplay/ffmpeg 验证
 - **设备状态机骨架**（`gb28181_device_stateful.cpp`）：常驻进程、`IDLE/REGISTERING/AUTHENTICATING/REGISTERED/INVITING/STREAMING/BYE_PENDING/DEREGISTERING` 八态迁移、`select()` 事件循环、Keepalive 周期定时器、连续超时判掉线、指数退避重连、BYE 后回 REGISTERED 可循环 INVITE、`Expires:0` 注销。
 - **真实媒体源接入**：STREAMING 不再发一包 demo PS，而是从本地 `.h264`(Annex-B) 文件逐帧读（无文件走内置合成流），按 25fps 周期发 PS over RTP，PTS 按 3600/帧累计，文件读完自动 BYE。命令行 `gb28181_device_stateful.exe [cycles] [media_file]`，第二参数可选。
+- **RTCP 收发**：发送端 jrtplib 自动发 RTCP（`SetMinimumRTCPTransmissionInterval(1.0)` 学习用 1s），并可显式发 RTCP APP（`gb28181_send_rtcp_app`）。接收端 mock 监听 udp/30001（=RTP 端口+1），`print_rtcp_packet_summary` 解复合 RTCP，识别 SR(200)/RR(201)/SDES(202)/BYE(203)/APP(204)，提取 SR 的 NTP/RTP timestamp/packets/octet 和 RR 的 fraction_lost/lost/jitter。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
-- RTCP：SR/RR、丢包率/抖动、RTT、多流时钟同步（仓库尚无 RTCP 收发）
+- RTCP 统计上报：当前只打印 RTCP 字段，未做丢包率/抖动/RTT 的持续性统计上报
 - H.265：FU 分片与重组（当前仅 H.264）
 - RTP over TCP：国标主动拉流/被动收流（当前仅 UDP，`use_tcp` 返回 -2）
 - 真实平台互操作：当前全部是 mock↔mock 自测（退避重连、鉴权失败转 IDLE 等路径代码已写对，需真实平台验证）

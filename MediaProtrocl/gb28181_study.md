@@ -1014,7 +1014,7 @@ RTCP 是 RTP 的配套控制协议，负责统计、同步和会话辅助控制�
 
 在 GB28181 的学习阶段，RTCP 常常被低估，但它不是可有可无。它至少帮助你理解：RTP 不是单向裸发包，协议本身还有反馈和统计。你后面看真实设备或平台抓包时，如果只看到 RTP 没看到 RTCP，不代表协议不完整，只能说明这套设备/平台没有把 RTCP 作为显式可见部分打印出来，或者当前演示链路还没把它接出来。
 
-当前仓库里还没有做完整 RTCP 收发实现，所以这一步先以概念和抓包识别为主。下一步最自然的验证方式是：先在文档里把 RTCP 报文类型、作用和抓包点认清，再决定是否补一个最小 RTCP 监听或统计打印入口。
+当前仓库已经补了最小 RTCP 收发：发送端 jrtplib 按 1s 间隔自动发 RTCP（并可显式发 APP），接收端 mock 监听 udp/30001（=RTP 端口+1），`print_rtcp_packet_summary` 解复合 RTCP，识别 SR/RR/SDES/BYE/APP 并提取 SR 的 NTP/RTP timestamp/packets/octet 和 RR 的 fraction_lost/lost/jitter。这样 RTCP 不再只是概念，而是可见、可统计。后续可继续扩展为丢包率/抖动/RTT 的持续性上报。
 
 ## 7. GB28181 与 RTSP / RTMP 的关系
 
@@ -1855,6 +1855,6 @@ STREAMING 阶段已接入真实媒体源：从本地 `.h264`(Annex-B) 文件逐�
 仍待补（下一步）：
 
 - 退避重连、鉴权失败转 IDLE 等路径在真实平台验证（mock 不完全支持这些路径，代码已写对）
-- RTCP / H.265 / TCP 承载
+- RTCP 统计持续性上报（收发已通，见第 6 节）、H.265、TCP 承载
 
 代码能力清单与运行方式见 [GB28181/gb28181_code_reference.md](GB28181/gb28181_code_reference.md) 第 3.5 节和第 7 节。

@@ -361,12 +361,13 @@ RTP 分片如何控制 marker/timestamp
 6. 验证闭环：重组后的 NALU 经回调写入运行目录 `gb28181_rx.h264`（Annex-B 裸流），可用 `ffplay gb28181_rx.h264` 或 `ffmpeg -i gb28181_rx.h264 -f null -` 验证整条接收链路。
 7. 设备状态机骨架（`gb28181_device_stateful.cpp`）：常驻进程、八态迁移、select 事件循环、Keepalive 周期、指数退避重连、BYE 后回注册态可循环 INVITE、Expires:0 注销。
 8. 真实媒体源：状态机 STREAMING 从本地 .h264(Annex-B) 文件逐帧读（无文件走内置合成流），按 25fps 周期发 PS over RTP，PTS 按 3600/帧累计，文件读完自动 BYE。
+9. RTCP 收发：发送端 jrtplib 自动发 RTCP（1s 间隔）+ 可显式发 APP；接收端 mock 监听 udp/30001，解析 SR/RR/SDES/BYE/APP 并提取统计字段。
 
 逐函数能力清单、接收端状态机机制和输出文件说明见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md)。
 
 后续走向"能当生产设备用"还差（按优先级）：
 
-1. RTCP：SR/RR 报文、丢包率/抖动统计、RTT、多流时钟同步（仓库尚无 RTCP 收发）。
+1. RTCP 统计上报：当前已能收发 RTCP（SR/RR/SDES/APP 识别 + 字段提取），但未做丢包率/抖动/RTT 持续性统计上报。
 2. H.265 支持：FU 分片与重组（当前仅 H.264）。
 3. RTP over TCP：国标主动拉流 / 被动收流模式（当前仅 UDP）。
 4. 对接真实 GB28181 平台互操作测试（当前全部是 mock↔mock 自测，退避重连等路径代码已写对需真实平台验证）。

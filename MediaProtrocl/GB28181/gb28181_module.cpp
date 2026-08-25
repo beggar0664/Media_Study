@@ -172,6 +172,10 @@ int gb28181_start(gb28181_handle_t handle)
     session_params.SetUsePredefinedSSRC(true);
     session_params.SetPredefinedSSRC(ctx->ssrc);
     session_params.SetMaximumPacketSize(1400);
+    /* RTCP：jrtplib 默认就自动发 SR/RR（默认 5s 间隔）。
+     * 学习用调到 1s，让 mock 接收端在 STREAMING 期间每秒能看到一条 SR。
+     * 生产环境通常保留 5s。这行只是配置，不手写 RTCP 协议。 */
+    session_params.SetMinimumRTCPTransmissionInterval(RTPTime(1.0));
 
     RTPUDPv4TransmissionParams trans_params;
     trans_params.SetPortbase((uint16_t)cfg_local_rtp_port(&ctx->config));
@@ -1155,6 +1159,34 @@ int gb28181_get_ssrc(gb28181_handle_t handle, unsigned int *ssrc_out)
         return -1;
     }
     *ssrc_out = ctx->ssrc;
+    return 0;
+}
+
+int gb28181_send_rtcp_app(gb28181_handle_t handle,
+                          unsigned char subtype,
+                          const unsigned char name[4],
+                          const void *appdata,
+                          int appdata_len)
+{
+    /* 显式发一个 RTCP APP 报文，验证 RTCP 通路。
+     * jrtplib 的 SendRTCPAPPPacket 会把它封进 RTCP compound packet 发出。 */
+    gb28181_context_t *ctx = (gb28181_context_t *)handle;
+    uint8_t nm[4] = {0, 0, 0, 0};
+    int status;
+
+    if (!ctx || !ctx->started || !ctx->rtp_session || !name) {
+        return -1;
+    }
+    if (appdata_len < 0) {
+        return -1;
+    }
+    memcpy(nm, name, 4);
+    status = ctx->rtp_session->SendRTCPAPPPacket((uint8_t)subtype, nm,
+                                                 appdata, (size_t)appdata_len);
+    if (status < 0) {
+        printf("[gb28181] SendRTCPAPPPacket failed: %d\n", status);
+        return status;
+    }
     return 0;
 }
 

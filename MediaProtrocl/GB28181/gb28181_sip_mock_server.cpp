@@ -709,6 +709,111 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
     }
 }
 
+/*
+ * RTCP 报文最小解析。
+ *
+ * 和 RTP 一样只做学习式拆头，不做完整 RTCP 协议栈。RTCP 固定头 4 字节：
+ *   byte0: V(2) P(1) RC/SC(5)
+ *   byte1: PT(8)      200=SR 201=RR 202=SDES 203=BYE 204=APP
+ *   byte2-3: length(16)  这是以 32 位字为单位的长度-1
+ *
+ * SR(200) 在头之后还有 24 字节 sender info：
+ *   SSRC(4) NTP_ts(8: 高32秒+低32小数) RTP_ts(4) packet_count(4) octet_count(4)
+ * RR(201) 在头之后是 report blocks：SSRC(4) + 每个 block 24 字节
+ *   fraction_lost(1) lost(24 紧缩) ext_high_seq(4) jitter(4) LSR(4) DLSR(4)
+ *
+ * 这里 SR 提取 NTP/RTP ts/packets/octet；RR 提取 fraction_lost/lost/jitter；
+ * SDES/BYE/APP 只报类型。复合 RTCP 可能含多个 packet，按 length 推进循环。
+ */
+static void print_rtcp_packet_summary(const unsigned char *data, int size)
+{
+    int offset = 0;
+    int reported = 0;
+
+    if (!data || size < 4) {
+        printf("===== RTCP RX udp/30001 invalid len=%d =====\n", size);
+        return;
+    }
+
+    printf("===== RTCP RX udp/30001 len=%d =====\n", size);
+
+    /* RTCP compound packet 可能含多个子报文，按 length 字段推进。 */
+    while (offset + 4 <= size) {
+        unsigned int version = (data[offset] >> 6) & 0x03;
+        unsigned int rc_sc = data[offset] & 0x1F;
+        unsigned int pt = data[offset + 1];
+        unsigned int word_len = ((unsigned int)data[offset + 2] << 8) | data[offset + 3];
+        int byte_len = (int)((word_len + 1) * 4);  /* length 字段是不含自己的字数-1 */
+        const char *pt_name = "unknown";
+
+        if (version != 2) {
+            /* 不是 RTCP v2，可能是别的 UDP 报文，停止解析。 */
+            printf("  [sub %d] version=%u (not RTCP v2), stop\n", offset, version);
+            break;
+        }
+
+        switch (pt) {
+        case 200: pt_name = "SR"; break;
+        case 201: pt_name = "RR"; break;
+        case 202: pt_name = "SDES"; break;
+        case 203: pt_name = "BYE"; break;
+        case 204: pt_name = "APP"; break;
+        default: break;
+        }
+
+        printf("  [sub %d] V=2 RC=%u PT=%u(%s) length=%u bytes=%d\n",
+               offset, rc_sc, pt, pt_name, word_len, byte_len);
+
+        /* SR sender info（头 4 字节之后 24 字节）。 */
+        if (pt == 200 && offset + 28 <= size) {
+            const unsigned char *p = data + offset;
+            unsigned int ssrc = ((unsigned int)p[4] << 24) | ((unsigned int)p[5] << 16) |
+                               ((unsigned int)p[6] << 8) | p[7];
+            unsigned long long ntp_sec = ((unsigned long long)p[8] << 24) | ((unsigned long long)p[9] << 16) |
+                                        ((unsigned long long)p[10] << 8) | p[11];
+            unsigned long long ntp_frac = ((unsigned long long)p[12] << 24) | ((unsigned long long)p[13] << 16) |
+                                         ((unsigned long long)p[14] << 8) | p[15];
+            unsigned int rtp_ts = ((unsigned int)p[16] << 24) | ((unsigned int)p[17] << 16) |
+                                 ((unsigned int)p[18] << 8) | p[19];
+            unsigned int pkt_count = ((unsigned int)p[20] << 24) | ((unsigned int)p[21] << 16) |
+                                    ((unsigned int)p[22] << 8) | p[23];
+            unsigned int oct_count = ((unsigned int)p[24] << 24) | ((unsigned int)p[25] << 16) |
+                                    ((unsigned int)p[26] << 8) | p[27];
+            printf("    SR sender: ssrc=0x%08X ntp_sec=%llu ntp_frac=%llu rtp_ts=%u packets=%u octets=%u\n",
+                   ssrc, ntp_sec, ntp_frac, rtp_ts, pkt_count, oct_count);
+        }
+
+        /* RR report block（头 4 + SSRC 4 之后，每 block 24 字节）。rc_sc 是 block 数。 */
+        if (pt == 201 && offset + 8 <= size) {
+            unsigned int reporter_ssrc = ((unsigned int)data[offset+4] << 24) | ((unsigned int)data[offset+5] << 16) |
+                                        ((unsigned int)data[offset+6] << 8) | data[offset+7];
+            printf("    RR reporter: ssrc=0x%08X blocks=%u\n", reporter_ssrc, rc_sc);
+            if (rc_sc > 0 && offset + 32 <= size) {
+                const unsigned char *b = data + offset + 8;
+                unsigned int fraction = b[0];
+                int lost = (int)(((unsigned int)b[1] << 16) | ((unsigned int)b[2] << 8) | b[3]);
+                if (lost & 0x00800000) {
+                    lost |= ~0x00FFFFFF;  /* 24 位有符号扩展 */
+                }
+                unsigned int jitter = ((unsigned int)b[4] << 8) | b[5];
+                printf("    RR block 0: fraction_lost=%u/256 packets_lost=%d jitter=%u\n",
+                       fraction, lost, jitter);
+            }
+        }
+
+        reported++;
+        /* 推进到下一个子报文。byte_len 是含头的总字节数。 */
+        if (byte_len <= 0) {
+            break;  /* 防御：异常 length */
+        }
+        offset += byte_len;
+        if (reported > 8) {
+            printf("  (more than 8 sub-packets, stop)\n");
+            break;
+        }
+    }
+}
+
 static void build_www_auth(char *buf, int buf_size)
 {
     /* 用于 401 响应的最小 Digest challenge。 */
@@ -778,13 +883,17 @@ int main(void)
     /* 最小 SIP mock 平台：处理 REGISTER / MESSAGE / INVITE / ACK / BYE。 */
     int sockfd;
     int rtp_sockfd;
+    int rtcp_sockfd;
     char recv_buf[8192];
     unsigned char rtp_buf[2048];
+    unsigned char rtcp_buf[2048];
     char reply[8192];
     struct sockaddr_in peer;
     struct sockaddr_in rtp_peer;
+    struct sockaddr_in rtcp_peer;
     socklen_t peer_len = sizeof(peer);
     socklen_t rtp_peer_len = sizeof(rtp_peer);
+    socklen_t rtcp_peer_len = sizeof(rtcp_peer);
     int registered = 0;
     int invited = 0;
     int acked = 0;
@@ -805,9 +914,18 @@ int main(void)
         cleanup_winsock();
         return 1;
     }
+    /* RTCP 端口 = RTP 端口 + 1。jrtplib 发送端默认会在 30001 发 SR/RR。 */
+    rtcp_sockfd = bind_udp_socket(30001);
+    if (rtcp_sockfd < 0) {
+        socket_close(rtp_sockfd);
+        socket_close(sockfd);
+        cleanup_winsock();
+        return 1;
+    }
 
     printf("GB28181 SIP mock server listening on udp/5060\n");
     printf("GB28181 RTP mock receiver listening on udp/30000\n");
+    printf("GB28181 RTCP mock receiver listening on udp/30001\n");
 
     for (;;) {
         fd_set readfds;
@@ -819,9 +937,21 @@ int main(void)
         FD_ZERO(&readfds);
         FD_SET(sockfd, &readfds);
         FD_SET(rtp_sockfd, &readfds);
-        maxfd = sockfd > rtp_sockfd ? sockfd : rtp_sockfd;
+        FD_SET(rtcp_sockfd, &readfds);
+        maxfd = sockfd;
+        if (rtp_sockfd > maxfd) maxfd = rtp_sockfd;
+        if (rtcp_sockfd > maxfd) maxfd = rtcp_sockfd;
         ret = select(maxfd + 1, &readfds, NULL, NULL, NULL);
         if (ret <= 0) {
+            continue;
+        }
+
+        if (FD_ISSET(rtcp_sockfd, &readfds)) {
+            ret = recvfrom(rtcp_sockfd, (char *)rtcp_buf, sizeof(rtcp_buf), 0,
+                           (struct sockaddr *)&rtcp_peer, &rtcp_peer_len);
+            if (ret > 0) {
+                print_rtcp_packet_summary(rtcp_buf, ret);
+            }
             continue;
         }
 
@@ -1002,6 +1132,7 @@ int main(void)
         send_reply(sockfd, &peer, reply);
     }
 
+    socket_close(rtcp_sockfd);
     socket_close(rtp_sockfd);
     socket_close(sockfd);
     cleanup_winsock();
