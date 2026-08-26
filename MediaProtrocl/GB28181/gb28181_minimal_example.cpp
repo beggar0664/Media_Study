@@ -64,6 +64,7 @@ int main(void)
     };
     unsigned char demo_ps_pack[512];
     unsigned char large_idr_nalu[256];
+    unsigned char large_h265_nalu[256];  /* 用于 H.265 FU 分片演示 */
     unsigned char normal_h264_annexb[2048];
     unsigned char normal_ps_pack[4096];
     int demo_ps_len;
@@ -105,6 +106,29 @@ int main(void)
         large_idr_nalu[normal_h264_len] = (unsigned char)(0x80 + (normal_h264_len & 0x3F));
     }
     normal_h264_len = 0;
+
+    /*
+     * 构造一个较大的 H.265 NALU，专门用来触发 H.265 FU 分片。
+     *
+     * H.265 NALU 头是 2 字节：
+     *   byte0 = forbidden(1) | nal_unit_type(6) | nuh_layer_id_high(1)
+     *   byte1 = nuh_layer_id_low(5) | nuh_temporal_zero(1) | temporal_id_plus1(3)
+     *
+     * 这里用 type=19(IDR_W_RADL)：byte0 = (19 << 1) | 0 = 0x26，byte1 = 0x01(temporal=1)。
+     * 后面 254 字节是演示填充，不代表真实编码器输出。
+     *
+     * 后面调用 gb28181_send_h265_fu(..., max_payload_size=24, ...)，每片要留 3 字节
+     * 给 payload header(2) + FU header(1)，所以每片最多装 21 字节原始 NALU 数据，
+     * 256 字节的 NALU 一定会被拆成多片 H.265 FU。
+     */
+    large_h265_nalu[0] = 0x26;  /* type=19 IDR_W_RADL */
+    large_h265_nalu[1] = 0x01; /* layer_id=0, temporal_id_plus1=1 */
+    {
+        int i;
+        for (i = 2; i < (int)sizeof(large_h265_nalu); ++i) {
+            large_h265_nalu[i] = (unsigned char)(0x80 + (i & 0x3F));
+        }
+    }
 
     memcpy(normal_h264_annexb + normal_h264_len, demo_h264_annexb, sizeof(demo_h264_annexb));
     normal_h264_len += (int)sizeof(demo_h264_annexb);
@@ -206,6 +230,23 @@ int main(void)
             printf("sending H.264 FU-A fragmented IDR: max_payload=24\n");
             ret = gb28181_send_h264_fu_a(handle, large_idr_nalu, (int)sizeof(large_idr_nalu), 24, 9000);
             printf("[3/4] send H264 FU-A total=%d nalu_len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)sizeof(large_idr_nalu), 9000u);
+        }
+        if (ret >= 0) {
+            /*
+             * H.265 FU 分片发送演示（RFC 7798），与上面 H.264 FU-A 对照。
+             *
+             * 输入 large_h265_nalu 是裸 H.265 NALU，前 2 字节是 NALU 头(0x26 0x01，type=19)。
+             * 进入 gb28181_send_h265_fu() 后，2 字节头不会原样出现在每个 RTP payload 开头，
+             * 而是被拆成：
+             *   payload header(2 字节) = 原始头但 type 改成 49：0x62 0x01
+             *   FU header(1 字节)      = S/E 位 + 原始 FuType(19)
+             *     首片 0x93 (S=1, type=19)，中间片 0x13，末片 0x53 (E=1)
+             *
+             * 与 H.264 FU-A 的差异：头是 2 字节（非 1）、type=49（非 28）、FU header 的 FuType 是 6 位。
+             */
+            printf("sending H.265 FU fragmented IDR: max_payload=24\n");
+            ret = gb28181_send_h265_fu(handle, large_h265_nalu, (int)sizeof(large_h265_nalu), 24, 9000);
+            printf("[3/4] send H265 FU total=%d nalu_len=%u timestamp_inc=%u marker(last)=1\n", ret, (unsigned)sizeof(large_h265_nalu), 9000u);
         }
         if (ret >= 0 && normal_ps_len > 0) {
             /* 这个分片尺寸更接近实际工程，通常会让单包接近 MTU 上限但不超过。 */

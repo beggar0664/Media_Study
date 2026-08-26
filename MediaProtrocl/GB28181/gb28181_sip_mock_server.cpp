@@ -166,6 +166,8 @@ typedef struct {
     unsigned int expected_seq;
     unsigned int pending_fragments;
     unsigned char nalu_header;
+    unsigned char nalu_header1;   /* H.265 第二字节头（is_h265=1 时有效） */
+    int is_h265;                  /* 1=H.265 FU 重组（2字节头），0=H.264 FU-A */
     unsigned char buffer[4096];
     int length;
     fu_a_nalu_output_cb output_cb;
@@ -194,6 +196,8 @@ static void fu_a_reassembly_reset(h264_fu_a_reassembly_t *ctx)
     ctx->expected_seq = 0;
     ctx->pending_fragments = 0;
     ctx->nalu_header = 0;
+    ctx->nalu_header1 = 0;
+    ctx->is_h265 = 0;
     ctx->length = 0;
     {
         int i;
@@ -263,7 +267,8 @@ static int fu_a_reorder_push(h264_fu_a_reassembly_t *ctx,
 
     for (i = 0; i < FU_A_REORDER_WINDOW_SIZE; ++i) {
         if (!ctx->reorder_used[i]) {
-            int data_len = payload_size > 2 ? payload_size - 2 : 0;
+            int header_size = ctx->is_h265 ? 3 : 2;
+            int data_len = payload_size > header_size ? payload_size - header_size : 0;
             if (data_len > (int)sizeof(ctx->reorder_data[i])) {
                 return -1;
             }
@@ -272,7 +277,8 @@ static int fu_a_reorder_push(h264_fu_a_reassembly_t *ctx,
             ctx->reorder_len[i] = data_len;
             ctx->reorder_fu_end[i] = fu_end;
             if (data_len > 0) {
-                memcpy(ctx->reorder_data[i], payload + 2, (size_t)data_len);
+                int header_size = ctx->is_h265 ? 3 : 2;
+                memcpy(ctx->reorder_data[i], payload + header_size, (size_t)data_len);
             }
             return 0;
         }
@@ -335,7 +341,8 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
                                           int payload_size,
                                           unsigned int fu_start,
                                           unsigned int fu_end,
-                                          unsigned int fu_type)
+                                          unsigned int fu_type,
+                                          int is_h265)
 {
     unsigned char nalu_header;
     int data_len;
@@ -347,7 +354,7 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
     nalu_header = (unsigned char)((payload[0] & 0xE0) | (fu_type & 0x1F));
     if (fu_start) {
         if (ctx->active) {
-            printf("FU-A drop: start fragment overlaps unfinished NALU, expected_seq=%u pending=%u, restarting\n",
+            printf("FU drop: start fragment overlaps unfinished NALU, expected_seq=%u pending=%u, restarting\n",
                    ctx->expected_seq,
                    ctx->pending_fragments);
         }
@@ -357,23 +364,44 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
         ctx->expected_seq = (seq + 1) & 0xFFFF;
         ctx->pending_fragments = 1;
         ctx->start_tick = fu_a_now_ms();
-        ctx->nalu_header = nalu_header;
+        ctx->is_h265 = is_h265;
         ctx->length = 0;
-        if (ctx->length < (int)sizeof(ctx->buffer)) {
-            ctx->buffer[ctx->length++] = nalu_header;
+        if (is_h265) {
+            /*
+             * H.265 重组：重建 2 字节 NALU 头。
+             * 原始 payload header 是 2 字节（type=49），重组时把 type 换回 FuType：
+             *   byte0 = (payload[0] & 0x81) | (fu_type << 1)
+             *   byte1 = payload[1]（layer_id 低位 + temporal 全保留）
+             * 跳过 payload 的 2 字节 header + 1 字节 FU header = 3 字节，数据从 [3] 开始。
+             */
+            unsigned char h0 = (unsigned char)((payload[0] & 0x81) | ((fu_type & 0x3F) << 1));
+            unsigned char h1 = payload[1];
+            ctx->nalu_header = h0;
+            ctx->nalu_header1 = h1;
+            if (ctx->length + 1 < (int)sizeof(ctx->buffer)) {
+                ctx->buffer[ctx->length++] = h0;
+                ctx->buffer[ctx->length++] = h1;
+            }
+        } else {
+            /* H.264 重组：重建 1 字节 NALU 头 = (fu_indicator & 0xE0) | fu_type。 */
+            ctx->nalu_header = nalu_header;
+            if (ctx->length < (int)sizeof(ctx->buffer)) {
+                ctx->buffer[ctx->length++] = nalu_header;
+            }
         }
         if (payload_size > 2) {
-            data_len = payload_size - 2;
-            if (ctx->length + data_len > (int)sizeof(ctx->buffer)) {
-                data_len = (int)sizeof(ctx->buffer) - ctx->length;
-            }
+            int header_size = is_h265 ? 3 : 2;  /* H.265: payload header(2)+FU header(1); H.264: FU ind(1)+FU header(1) */
+            data_len = payload_size - header_size;
             if (data_len > 0) {
-                memcpy(ctx->buffer + ctx->length, payload + 2, (size_t)data_len);
+                if (ctx->length + data_len > (int)sizeof(ctx->buffer)) {
+                    data_len = (int)sizeof(ctx->buffer) - ctx->length;
+                }
+                memcpy(ctx->buffer + ctx->length, payload + header_size, (size_t)data_len);
                 ctx->length += data_len;
             }
         }
-        printf("FU-A reassembly start: timestamp=%u ssrc=0x%08X header=0x%02X\n",
-               ctx->timestamp, ctx->ssrc, ctx->nalu_header);
+        printf("FU reassembly start: %s timestamp=%u ssrc=0x%08X header=0x%02X\n",
+               is_h265 ? "H.265" : "H.264", ctx->timestamp, ctx->ssrc, ctx->nalu_header);
         if (fu_end) {
             fu_a_reassembly_print_nalu(ctx);
             if (ctx->output_cb) {
@@ -446,12 +474,13 @@ static void fu_a_reassembly_handle_packet(h264_fu_a_reassembly_t *ctx,
     ctx->pending_fragments += 1;
 
     if (payload_size > 2) {
-        data_len = payload_size - 2;
+        int header_size = ctx->is_h265 ? 3 : 2;
+        data_len = payload_size - header_size;
         if (ctx->length + data_len > (int)sizeof(ctx->buffer)) {
             data_len = (int)sizeof(ctx->buffer) - ctx->length;
         }
         if (data_len > 0) {
-            memcpy(ctx->buffer + ctx->length, payload + 2, (size_t)data_len);
+            memcpy(ctx->buffer + ctx->length, payload + header_size, (size_t)data_len);
             ctx->length += data_len;
         }
     }
@@ -701,8 +730,47 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
                                       data + payload_offset,
                                       payload_size,
                                       fu_start,
-                                       fu_end,
-                                       fu_type);
+                                      fu_end,
+                                      fu_type,
+                                      0);
+    } else if (payload_size >= 3 && ((data[payload_offset] >> 1) & 0x3F) == 49) {
+        /*
+         * H.265 FU 分包规则（RFC 7798）：
+         *   RTP payload[0..1] = 2 字节 payload header（NALU 头，type=49）
+         *     - forbidden(1) | nal_unit_type(6)=49 | nuh_layer_id_high(1)
+         *     - nuh_layer_id_low(5) | nuh_temporal_zero(1) | temporal_id_plus1(3)
+         *
+         *   RTP payload[2] = FU header
+         *     - bit7 S=1 表示首片
+         *     - bit6 E=1 表示末片
+         *     - 低 6 位 FuType = 原始 NALU type
+         *
+         *   RTP payload[3...] = 当前分片承载的原始 NALU 数据片段。
+         * 与 H.264 FU-A 的差异：头 2 字节、type=49（非 28）、FU header 的 FuType 是 6 位。
+         */
+        unsigned int fu_start = (unsigned int)((data[payload_offset + 2] >> 7) & 0x01);
+        unsigned int fu_end = (unsigned int)((data[payload_offset + 2] >> 6) & 0x01);
+        unsigned int fu_type = (unsigned int)(data[payload_offset + 2] & 0x3F);
+        const char *fu_role = fu_start ? "first" : (fu_end ? "last" : "middle");
+        printf("payload type guess: H.265 FU\n");
+        printf("FU detail: payload_header=0x%02X%02X fu_header=0x%02X S=%u E=%u FuType=%u role=%s\n",
+               data[payload_offset],
+               data[payload_offset + 1],
+               data[payload_offset + 2],
+               fu_start,
+               fu_end,
+               fu_type,
+               fu_role);
+        fu_a_reassembly_handle_packet(&fu_a_ctx,
+                                      seq,
+                                      timestamp,
+                                      ssrc,
+                                      data + payload_offset,
+                                      payload_size,
+                                      fu_start,
+                                      fu_end,
+                                      fu_type,
+                                      1);
     } else {
         /* 当前 demo 没覆盖的 payload 类型先只打印头部，便于后续按抓包继续扩展解析。 */
         printf("payload type guess: unknown/demo payload\n");

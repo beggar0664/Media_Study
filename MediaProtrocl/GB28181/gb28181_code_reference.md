@@ -385,16 +385,17 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - SIP 信令：REGISTER+401 Digest、MESSAGE(Keepalive/Catalog/DeviceInfo/DeviceStatus)、INVITE+SDP+ACK+BYE
 - SDP 协商：m=/a=rtpmap/a=sendonly·recvonly/a=ssrc 构造
 - 媒体发送：PS/PES 打包、RTP 单包、通用字节分片、H.264 FU-A 分片
-- 媒体接收：RTP 头解析、payload 识别(PS/裸H.264/FU-A)、PS 拆层、**FU-A 重组状态机**（重排序窗+超时+丢包/乱序/重复处理）
+- 媒体接收：RTP 头解析、payload 识别(PS/裸H.264/H.264 FU-A/H.265 FU)、PS 拆层、**FU 重组状态机**（重排序窗+超时+丢包/乱序/重复处理，H.264/H.265 共用，差异在头重建）
 - 验证闭环：重组 NALU 落盘 `gb28181_rx.h264`，可用 ffplay/ffmpeg 验证
 - **设备状态机骨架**（`gb28181_device_stateful.cpp`）：常驻进程、`IDLE/REGISTERING/AUTHENTICATING/REGISTERED/INVITING/STREAMING/BYE_PENDING/DEREGISTERING` 八态迁移、`select()` 事件循环、Keepalive 周期定时器、连续超时判掉线、指数退避重连、BYE 后回 REGISTERED 可循环 INVITE、`Expires:0` 注销。
 - **真实媒体源接入**：STREAMING 不再发一包 demo PS，而是从本地 `.h264`(Annex-B) 文件逐帧读（无文件走内置合成流），按 25fps 周期发 PS over RTP，PTS 按 3600/帧累计，文件读完自动 BYE。命令行 `gb28181_device_stateful.exe [cycles] [media_file]`，第二参数可选。
 - **RTCP 收发**：发送端 jrtplib 自动发 RTCP（`SetMinimumRTCPTransmissionInterval(1.0)` 学习用 1s），并可显式发 RTCP APP（`gb28181_send_rtcp_app`）。接收端 mock 监听 udp/30001（=RTP 端口+1），`print_rtcp_packet_summary` 解复合 RTCP，识别 SR(200)/RR(201)/SDES(202)/BYE(203)/APP(204)，提取 SR 的 NTP/RTP timestamp/packets/octet 和 RR 的 fraction_lost/lost/jitter。
+- **H.265 FU 分片与重组**（RFC 7798）：`gb28181_send_h265_fu` 发送分片（2字节 NALU 头、type=49 payload header、FU header S/E/FuType）；mock 端重组状态机与 H.264 共用，按 `is_h265` 分支重建 2 字节头（H.264 重建 1 字节）。已验证：mock 识别 H.265 FU，重组还原 `header=0x26 head: 26 01 ...`（对照 H.264 的 `header=0x65`）。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
 - RTCP 统计上报：当前只打印 RTCP 字段，未做丢包率/抖动/RTT 的持续性统计上报
-- H.265：FU 分片与重组（当前仅 H.264）
+- H.265 SDP 协商：当前 SDP 仍写 `H264`，H.265 只在 FU 层支持，编码协商留后续
 - RTP over TCP：国标主动拉流/被动收流（当前仅 UDP，`use_tcp` 返回 -2）
 - 真实平台互操作：当前全部是 mock↔mock 自测（退避重连、鉴权失败转 IDLE 等路径代码已写对，需真实平台验证）
 

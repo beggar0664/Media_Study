@@ -1528,6 +1528,41 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 这说明接收端已经把一组 FU-A 分片还原回原始裸 NALU：首字节恢复成 `0x65`，长度恢复成 `256`。这里仍然没有解码图像，只是完成了 H.264 RTP 负载层的重组验证。
 
+### 10.3.1 H.265 FU 分片与重组（RFC 7798）
+
+H.265 的 RTP FU 分片和 H.264 FU-A 结构相似但头布局不同，是学习 H.265 over RTP 的重点：
+
+| 维度 | H.264 FU-A | H.265 FU |
+|---|---|---|
+| NALU 头 | 1 字节 | 2 字节 |
+| 分片 type | 28 | 49 |
+| FU 头 | 1 字节：S/E/type(5位) | 1 字节：S/E/FuType(6位) |
+| 每片开销 | FU indicator(1)+FU header(1)=2 | payload header(2)+FU header(1)=3 |
+
+H.265 NALU 头 2 字节：`byte0 = forbidden(1)|nal_unit_type(6)|nuh_layer_id_high(1)`，`byte1 = nuh_layer_id_low(5)|nuh_temporal_zero(1)|temporal_id_plus1(3)`，`nal_unit_type = (byte0>>1)&0x3F`。
+
+FU 的 RTP payload 结构：
+
+```text
+[2 字节 payload header][1 字节 FU header][NALU slice...]
+payload header = 原始 NALU 头，但 nal_unit_type 改成 49
+FU header = S(1) | E(1) | FuType(6)，FuType = 原始 nal_unit_type
+```
+
+当前 `gb28181_send_h265_fu()` 实现发送分片，mock 端重组状态机与 H.264 共用（按 `is_h265` 分支重建头）：
+
+- H.264 重组：首片重建 1 字节头 = `(fu_indicator & 0xE0) | fu_type`
+- H.265 重组：首片重建 2 字节头 = `(payload[0] & 0x81) | (fu_type << 1)` + `payload[1]`
+
+验证日志对照（同一台 mock，H.264 和 H.265 各发一个大 NALU）：
+
+```text
+H.264: FU-A reassembled NALU: len=256 header=0x65 head: 65 81 82 ...
+H.265: FU-A reassembled NALU: len=256 header=0x26 head: 26 01 82 83 ...
+```
+
+H.264 重组头是 1 字节 `0x65`，H.265 重组头是 2 字节 `26 01`——这正是两种 NALU 头布局的差异。注意当前 SDP 仍写 `H264`，H.265 只在 FU 层支持，编码协商留后续。
+
 ### 10.4 FU-A 异常场景怎么处理
 
 当前 mock 里的 `fu_a_reassembly_handle_packet()` 已经补成学习版接收状态机：围绕 `seq + timestamp + SSRC + S/E + pending_fragments + 墙钟` 判断这一组分片是否还能拼成一个完整 NALU，并带一个 8 槽位的乱序重排序窗口。

@@ -1400,3 +1400,81 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
 
     return total_sent;
 }
+
+/*
+ * H.265 FU 分片发送（RFC 7798）。
+ *
+ * 和 H.264 FU-A 的关键差异（这是学习重点）：
+ *   - H.264 NALU 头 1 字节，FU-A 用 type=28，FU 头是 S/E/type
+ *   - H.265 NALU 头 2 字节，FU 用 NAL_UNIT_TYPE=49，FU 头是 S/E/FuType
+ *
+ * H.265 NALU 头 2 字节布局：
+ *   byte0: forbidden(1) | nal_unit_type(6) | nuh_layer_id_high(1)
+ *   byte1: nuh_layer_id_low(5) | nuh_temporal_zero(1) | temporal_id_plus1(3)
+ *   nal_unit_type = (byte0 >> 1) & 0x3F
+ *
+ * FU 的 RTP payload 结构：
+ *   [2 字节 payload header][1 字节 FU header][NALU slice...]
+ * 其中：
+ *   payload header = 原始 NALU 头 2 字节，但 nal_unit_type 改成 49
+ *   FU header = S(1) | E(1) | FuType(6)，FuType = 原始 nal_unit_type
+ *
+ * 跳过原始 2 字节头，每片 payload 前加 payload header(2) + FU header(1) = 3 字节开销。
+ */
+int gb28181_send_h265_fu(gb28181_handle_t handle,
+                         const unsigned char *nalu,
+                         int nalu_size,
+                         int max_payload_size,
+                         unsigned int timestamp_inc)
+{
+    unsigned char packet[1500];
+    unsigned char ph0, ph1;        /* payload header 2 字节 */
+    unsigned char fu_type;
+    int offset;
+    int total_sent = 0;
+
+    if (!handle || !nalu || nalu_size <= 2 || max_payload_size <= 3) {
+        return -1;
+    }
+    if (max_payload_size > (int)sizeof(packet)) {
+        return -2;
+    }
+
+    /* 提取原始 nal_unit_type，并构造 payload header：type 改成 49。 */
+    fu_type = (unsigned char)((nalu[0] >> 1) & 0x3F);
+    ph0 = (unsigned char)((nalu[0] & 0x81) | (49 << 1));  /* forbidden+layer_id 高位保留，type=49 */
+    ph1 = nalu[1];                                          /* layer_id 低位 + temporal 全保留 */
+
+    /* 跳过原始 2 字节 NALU 头。 */
+    offset = 2;
+
+    while (offset < nalu_size) {
+        /* 每片 payload 前有 3 字节开销（payload header 2 + FU header 1）。 */
+        int remaining = nalu_size - offset;
+        int chunk = remaining > (max_payload_size - 3) ? (max_payload_size - 3) : remaining;
+        int is_first = (offset == 2);
+        int is_last = (offset + chunk >= nalu_size);
+        int ret;
+
+        packet[0] = ph0;
+        packet[1] = ph1;
+        /* FU header：S/E 位 + 原始 FuType。 */
+        packet[2] = (unsigned char)(fu_type & 0x3F);
+        if (is_first) {
+            packet[2] = (unsigned char)(packet[2] | 0x80);  /* S=1 */
+        }
+        if (is_last) {
+            packet[2] = (unsigned char)(packet[2] | 0x40);  /* E=1 */
+        }
+        memcpy(packet + 3, nalu + offset, (size_t)chunk);
+
+        ret = gb28181_send_rtp_packet(handle, packet, chunk + 3, is_last ? timestamp_inc : 0, is_last ? 1 : 0);
+        if (ret < 0) {
+            return ret;
+        }
+        total_sent += chunk;
+        offset += chunk;
+    }
+
+    return total_sent;
+}

@@ -163,6 +163,13 @@ int gb28181_send_h264_fu_a(gb28181_handle_t handle,
                            int nalu_size,
                            int max_payload_size,
                            unsigned int timestamp_inc);
+/* H.265 FU 分片：H.265 NALU 的 RTP 分片（RFC 7798），与 H.264 FU-A 对照。
+ * H.265 NALU 头是 2 字节，FU 用 NAL_UNIT_TYPE=49，FU header 是 S/E/FuType。 */
+int gb28181_send_h265_fu(gb28181_handle_t handle,
+                         const unsigned char *nalu,
+                         int nalu_size,
+                         int max_payload_size,
+                         unsigned int timestamp_inc);
 
 #ifdef __cplusplus
 }
