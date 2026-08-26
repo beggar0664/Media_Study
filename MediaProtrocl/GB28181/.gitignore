@@ -1,7 +1,7 @@
 # 运行时产物，不入库
-MediaProtrocl/GB28181/gb28181_rx.h264
-MediaProtrocl/GB28181/out/
-MediaProtrocl/GB28181/build/
-MediaProtrocl/GB28181/build_nmake/
-MediaProtrocl/GB28181/nmakebuild/
-MediaProtrocl/GB28181/vsbuild/
+gb28181_rx.h264
+out/
+build/
+build_nmake/
+nmakebuild/
+vsbuild/

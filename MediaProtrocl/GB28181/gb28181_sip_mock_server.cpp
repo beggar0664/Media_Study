@@ -26,7 +26,10 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <time.h>
 
 static int init_winsock(void)
 {
@@ -882,11 +885,69 @@ static void print_rtcp_packet_summary(const unsigned char *data, int size)
     }
 }
 
-static void build_www_auth(char *buf, int buf_size)
+/*
+ * 从 SIP 报文文本里提取 Expires 头的数值。
+ * 真平台用 Expires:0 表示注销；解析失败返回 -1。
+ */
+static int extract_expires(const char *msg)
 {
-    /* 用于 401 响应的最小 Digest challenge。 */
+    const char *p;
+    const char *colon;
+    const char *line_end;
+    char valbuf[32];
+    int i;
+
+    if (!msg) {
+        return -1;
+    }
+    p = msg;
+    while ((p = strstr(p, "Expires:")) != NULL) {
+        /* 跳过已匹配的 "Expires:" */
+        colon = p + 8;
+        line_end = strstr(colon, "\r\n");
+        if (!line_end) {
+            line_end = colon + strlen(colon);
+        }
+        i = 0;
+        while (colon < line_end && isspace((unsigned char)*colon) && i < (int)sizeof(valbuf) - 1) {
+            colon++;
+        }
+        while (colon < line_end && *colon >= '0' && *colon <= '9' && i < (int)sizeof(valbuf) - 1) {
+            valbuf[i++] = *colon++;
+        }
+        valbuf[i] = '\0';
+        if (i > 0) {
+            return atoi(valbuf);
+        }
+        p = colon;
+    }
+    return -1;
+}
+
+/*
+ * 用于 401 响应的最小 Digest challenge。
+ * nonce 动态生成（真平台每次 401 用随机 nonce），同时写入 nonce_out 供调用方
+ * 后续校验客户端 Authorization 里的 nonce 是否匹配。
+ */
+static void build_www_auth(char *buf, int buf_size, char *nonce_out, int nonce_size)
+{
+    unsigned long long n;
+    n = (unsigned long long)time(NULL) * 1000ULL;
+#ifdef _WIN32
+    n += (unsigned long long)GetTickCount() % 1000;
+#else
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        n += (unsigned long long)(ts.tv_nsec / 1000000);
+    }
+#endif
+    n ^= ((unsigned long long)rand() << 16);
+    if (nonce_out && nonce_size > 0) {
+        snprintf(nonce_out, nonce_size, "%016llx", n);
+    }
     snprintf(buf, buf_size,
-        "WWW-Authenticate: Digest realm=\"3402000000\", nonce=\"1234567890abcdef\", algorithm=MD5, qop=auth\r\n");
+        "WWW-Authenticate: Digest realm=\"3402000000\", nonce=\"%016llx\", algorithm=MD5, qop=auth\r\n", n);
 }
 
 static void build_play_sdp(char *buf, int buf_size)
@@ -902,6 +963,82 @@ static void build_play_sdp(char *buf, int buf_size)
         "a=recvonly\r\n"
         "a=rtpmap:96 H264/90000\r\n"
         "a=ssrc:0305419896\r\n");
+}
+
+/*
+ * 平台主动向设备下发 MESSAGE Catalog Query（平台→设备，真平台常见行为）。
+ * 当前 mock 角色是平台(34020000002000000001)，目标是设备(34020000001320000001)。
+ * cseq 由调用方指定，调用后置 platform_queried=1。
+ */
+static void send_platform_catalog_query(int sockfd, const struct sockaddr_in *device_addr, int cseq)
+{
+    char body[512];
+    char buf[2048];
+    int body_len;
+
+    snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Query>\r\n"
+        "<CmdType>Catalog</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>34020000001320000001</DeviceID>\r\n"
+        "</Query>\r\n",
+        cseq);
+    body_len = (int)strlen(body);
+
+    snprintf(buf, sizeof(buf),
+        "MESSAGE sip:34020000001320000001@3402000000 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-platform-query-%d\r\n"
+        "From: <sip:34020000002000000001@3402000000>;tag=platform\r\n"
+        "To: <sip:34020000001320000001@3402000000>\r\n"
+        "Call-ID: platform-query-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        cseq, cseq, cseq, body_len, body);
+    printf("===== TX platform Catalog Query =====\n%s\n", buf);
+    send_reply(sockfd, device_addr, buf);
+}
+
+/*
+ * 平台主动向设备发 INVITE 拉流（被动收流模式，真平台常见行为）。
+ * SDP a=recvonly 表示平台只收，设备应回 200+SDP a=sendonly 并开始推流。
+ */
+static void send_platform_invite(int sockfd, const struct sockaddr_in *device_addr, int cseq)
+{
+    char sdp[512];
+    int sdp_len;
+    char buf[2048];
+
+    snprintf(sdp, sizeof(sdp),
+        "v=0\r\n"
+        "o=34020000002000000001 0 0 IN IP4 127.0.0.1\r\n"
+        "s=Play\r\n"
+        "c=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\n"
+        "m=video 30000 RTP/AVP 96\r\n"
+        "a=recvonly\r\n"
+        "a=rtpmap:96 H264/90000\r\n"
+        "a=ssrc:0305419896\r\n");
+    sdp_len = (int)strlen(sdp);
+
+    snprintf(buf, sizeof(buf),
+        "INVITE sip:34020000001320000001@3402000000 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-platform-invite-%d\r\n"
+        "From: <sip:34020000002000000001@3402000000>;tag=platform\r\n"
+        "To: <sip:34020000001320000001@3402000000>\r\n"
+        "Call-ID: platform-invite-%d\r\n"
+        "CSeq: %d INVITE\r\n"
+        "Contact: <sip:34020000002000000001@127.0.0.1:5060>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        cseq, cseq, cseq, sdp_len, sdp);
+    printf("===== TX platform INVITE (pull stream) =====\n%s\n", buf);
+    send_reply(sockfd, device_addr, buf);
 }
 
 static void build_catalog_response_message(char *buf, int buf_size, int cseq)
@@ -965,6 +1102,11 @@ int main(void)
     int registered = 0;
     int invited = 0;
     int acked = 0;
+    char last_nonce[64] = {0};   /* 最近 401 下发的 nonce，供反查客户端 Authorization */
+    int platform_queried = 0;     /* 注册后是否已主动下发过 Catalog Query */
+    int platform_invited = 0;     /* 注册后是否已主动 INVITE 拉流 */
+
+    srand((unsigned int)time(NULL));
 
     if (init_winsock() != 0) {
         printf("WSAStartup failed\n");
@@ -1046,36 +1188,76 @@ int main(void)
         printf("===== RX from %s:%d =====\n%s\n", from_ip, ntohs(peer.sin_port), recv_buf);
 
         if (msg.is_response) {
-            printf("SIP response status=%d reason=%s, ignored by mock server\n",
-                   msg.status_code,
-                   msg.reason[0] ? msg.reason : "<none>");
+            /* 平台主动 INVITE 后，收到设备的 200+SDP，要发 ACK 确认会话（真平台行为）。 */
+            if (msg.status_code == 200 && platform_invited &&
+                strstr(msg.call_id, "platform-invite") != NULL) {
+                char ack[2048];
+                snprintf(ack, sizeof(ack),
+                    "ACK sip:34020000001320000001@3402000000 SIP/2.0\r\n"
+                    "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-platform-ack\r\n"
+                    "From: <sip:34020000002000000001@3402000000>;tag=platform\r\n"
+                    "To: %s\r\n"
+                    "Call-ID: %s\r\n"
+                    "CSeq: %d ACK\r\n"
+                    "Max-Forwards: 70\r\n"
+                    "Content-Length: 0\r\n\r\n",
+                    msg.to, msg.call_id, msg.cseq);
+                printf("===== TX platform ACK (stream established, device pushes) =====\n%s\n", ack);
+                send_reply(sockfd, &peer, ack);
+            } else {
+                printf("SIP response status=%d reason=%s, ignored by mock server\n",
+                       msg.status_code,
+                       msg.reason[0] ? msg.reason : "<none>");
+            }
             continue;
         }
 
         printf("method=%s cseq=%d auth=%s\n", msg.method, msg.cseq, msg.authorization[0] ? msg.authorization : "<none>");
 
-        /* 第一次 REGISTER 没有 Authorization，故意回 401 让客户端走鉴权。 */
-        if (!registered && strcmp(msg.method, "REGISTER") == 0 && msg.authorization[0] == '\0') {
-            char www_auth[256];
-            build_www_auth(www_auth, sizeof(www_auth));
-            snprintf(reply, sizeof(reply),
-                "SIP/2.0 401 Unauthorized\r\n"
-                "Via: %s\r\n"
-                "From: %s\r\n"
-                "To: %s\r\n"
-                "Call-ID: %s\r\n"
-                "CSeq: %d REGISTER\r\n"
-                "%s"
-                "Content-Length: 0\r\n\r\n",
-                msg.via, msg.from, msg.to, msg.call_id, msg.cseq, www_auth);
-            printf("===== TX 401 =====\n%s\n", reply);
-            send_reply(sockfd, &peer, reply);
-            continue;
-        }
+        /* REGISTER 分支：解析 Expires，区分注册/注销，401 用动态 nonce。 */
+        if (strcmp(msg.method, "REGISTER") == 0) {
+            int expires = extract_expires(recv_buf);
 
-        if (strcmp(msg.method, "REGISTER") == 0 && msg.authorization[0] != '\0') {
+            /* 注销：Expires:0。无论当前是否已注册，都回 200 并置未注册。 */
+            if (expires == 0) {
+                registered = 0;
+                snprintf(reply, sizeof(reply),
+                    "SIP/2.0 200 OK\r\n"
+                    "Via: %s\r\n"
+                    "From: %s\r\n"
+                    "To: %s\r\n"
+                    "Call-ID: %s\r\n"
+                    "CSeq: %d REGISTER\r\n"
+                    "Content-Length: 0\r\n\r\n",
+                    msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
+                printf("===== TX 200 (deregister Expires:0) =====\n%s\n", reply);
+                send_reply(sockfd, &peer, reply);
+                continue;
+            }
+
+            /* 第一次 REGISTER 没有 Authorization，回 401 + 动态 nonce。 */
+            if (msg.authorization[0] == '\0') {
+                char www_auth[256];
+                build_www_auth(www_auth, sizeof(www_auth), last_nonce, sizeof(last_nonce));
+                snprintf(reply, sizeof(reply),
+                    "SIP/2.0 401 Unauthorized\r\n"
+                    "Via: %s\r\n"
+                    "From: %s\r\n"
+                    "To: %s\r\n"
+                    "Call-ID: %s\r\n"
+                    "CSeq: %d REGISTER\r\n"
+                    "%s"
+                    "Content-Length: 0\r\n\r\n",
+                    msg.via, msg.from, msg.to, msg.call_id, msg.cseq, www_auth);
+                printf("===== TX 401 (nonce=%s) =====\n%s\n", last_nonce, reply);
+                send_reply(sockfd, &peer, reply);
+                continue;
+            }
+
             /* 第二次 REGISTER 带 Authorization，认为注册成功。 */
             registered = 1;
+            platform_queried = 0;
+            platform_invited = 0;
             snprintf(reply, sizeof(reply),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"
@@ -1085,8 +1267,14 @@ int main(void)
                 "CSeq: %d REGISTER\r\n"
                 "Content-Length: 0\r\n\r\n",
                 msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
-            printf("===== TX 200 =====\n%s\n", reply);
+            printf("===== TX 200 (register ok) =====\n%s\n", reply);
             send_reply(sockfd, &peer, reply);
+
+            /* 注册成功后，平台主动下发 Catalog Query（真平台常见行为）。
+             * 设备应回 200 + Catalog Response MESSAGE。 */
+            send_platform_catalog_query(sockfd, &peer, msg.cseq + 100);
+            platform_queried = 1;
+            /* 稍后由主循环定时触发平台 INVITE 拉流，避免和 Query 抢同一个 recv 窗口。 */
             continue;
         }
 
@@ -1119,7 +1307,16 @@ int main(void)
             printf("===== TX MESSAGE 200 =====\n%s\n", reply);
             send_reply(sockfd, &peer, reply);
 
-            if (strcmp(cmd_type, "Catalog") == 0) {
+            /* 判断设备发来的是 Query 还是 Response（看 XML 根元素）。 */
+            if (msg.body && strstr(msg.body, "<Response>") != NULL) {
+                /* 设备回的是 Response（对平台下发 Query 的应答）。
+                 * 收到 Catalog Response 后，平台主动 INVITE 拉流（演示被动收流）。 */
+                if (!platform_invited) {
+                    send_platform_invite(sockfd, &peer, msg.cseq + 200);
+                    platform_invited = 1;
+                }
+            } else if (strcmp(cmd_type, "Catalog") == 0) {
+                /* 设备发来 Catalog Query（旧路径：设备主动查），mock 回 Response。 */
                 char catalog_msg[4096];
                 build_catalog_response_message(catalog_msg, sizeof(catalog_msg), msg.cseq + 1);
                 printf("===== TX CATALOG MESSAGE =====\n%s\n", catalog_msg);
@@ -1169,8 +1366,8 @@ int main(void)
             continue;
         }
 
-        if ((invited || acked) && strcmp(msg.method, "BYE") == 0) {
-            /* BYE 结束会话并清理状态。 */
+        if (registered && strcmp(msg.method, "BYE") == 0) {
+            /* BYE 结束会话并清理状态。registered 后即可处理设备发的 BYE。 */
             snprintf(reply, sizeof(reply),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"

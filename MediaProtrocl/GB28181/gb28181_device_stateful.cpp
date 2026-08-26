@@ -977,9 +977,10 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
             printf("[rx] %s in REGISTERED (keepalive ack)\n", reply_show);
             ctx->keepalive_misses = 0;
         } else if (!msg.is_response && strcmp(msg.method, "MESSAGE") == 0) {
-            /* 平台主动下发的 MESSAGE（如 Catalog/DeviceInfo Response）。回 200。 */
+            /* 平台下发的 MESSAGE：可能是 Query（要回 Response）或 Response（只回 200）。 */
             char ok[2048];
-            printf("[rx] MESSAGE in REGISTERED, reply 200\n");
+            int is_query = (msg.body && strstr(msg.body, "<Query>") != NULL);
+            printf("[rx] platform MESSAGE in REGISTERED (is_query=%d), reply 200\n", is_query);
             snprintf(ok, sizeof(ok),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"
@@ -990,6 +991,69 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
                 "Content-Length: 0\r\n\r\n",
                 msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
             send_sip(ctx->sip_sock, &ctx->remote_addr, ok);
+
+            /* 平台下发 Catalog Query，设备回 Catalog Response MESSAGE（真设备行为）。 */
+            if (is_query) {
+                char resp[4096];
+                int resp_len;
+                resp_len = gb28181_build_message_catalog_response(&ctx->cfg, (int)ctx->cseq + 50,
+                                                                    resp, (int)sizeof(resp));
+                if (resp_len > 0) {
+                    printf("[rx] platform Catalog Query, send Response\n");
+                    send_sip(ctx->sip_sock, &ctx->remote_addr, resp);
+                }
+            }
+        } else if (!msg.is_response && strcmp(msg.method, "INVITE") == 0) {
+            /* 平台主动 INVITE 拉流（被动收流模式）：设备回 200+SDP(a=sendonly)，
+             * 收到平台 ACK 后开始推流。当前先回 200+SDP，ACK 处理见下方。 */
+            char sdp[1024];
+            char ssrc_str[16];
+            int sdp_len;
+            char ok[4096];
+            snprintf(ssrc_str, sizeof(ssrc_str), "%010u", ctx->ssrc);
+            sdp_len = gb28181_build_sdp(&ctx->cfg, sdp, sizeof(sdp), ssrc_str);
+            snprintf(ok, sizeof(ok),
+                "SIP/2.0 200 OK\r\n"
+                "Via: %s\r\n"
+                "From: %s\r\n"
+                "To: %s;tag=gb28181\r\n"
+                "Call-ID: %s\r\n"
+                "CSeq: %d INVITE\r\n"
+                "Contact: <sip:%s@%s:%d>\r\n"
+                "Content-Type: application/sdp\r\n"
+                "Content-Length: %d\r\n\r\n"
+                "%s",
+                msg.via, msg.from, msg.to, msg.call_id, msg.cseq,
+                ctx->cfg.username, ctx->cfg.local_ip, ctx->cfg.local_sip_port,
+                sdp_len, sdp);
+            printf("[rx] platform INVITE (pull), reply 200+SDP, wait ACK\n");
+            send_sip(ctx->sip_sock, &ctx->remote_addr, ok);
+        } else if (!msg.is_response && strcmp(msg.method, "ACK") == 0) {
+            /* 平台对 INVITE 的 ACK：会话建立，开始推流（进入 STREAMING）。 */
+            printf("[rx] platform ACK, start streaming (platform-pulled)\n");
+            /* 复用 send_ack_and_start_media 的开帧源+建RTP会话逻辑，但不发 ACK。 */
+            {
+                gb28181_config_t media_cfg = ctx->cfg;
+                media_source_open(&ctx->media_src, ctx->media_file);
+                snprintf(media_cfg.remote_rtp_ip, sizeof(media_cfg.remote_rtp_ip), "%s", "127.0.0.1");
+                media_cfg.remote_rtp_port = 30000;
+                media_cfg.local_rtp_port = 10000;
+                media_cfg.ssrc = ctx->ssrc;
+                ctx->media_handle = gb28181_create(&media_cfg);
+                if (ctx->media_handle && gb28181_start(ctx->media_handle) == 0) {
+                    ctx->media_src.pts_90khz = 0;
+                    ctx->next_frame_ms = now_ms();
+                    ctx->streaming_until_ms = now_ms() + GB_STREAMING_HOLD_MS;
+                    ctx->state_deadline_ms = ctx->next_frame_ms;
+                    enter_state(ctx, GB_STATE_STREAMING);
+                } else {
+                    printf("[media] start RTP failed for platform-pulled stream\n");
+                    if (ctx->media_handle) {
+                        gb28181_destroy(ctx->media_handle);
+                        ctx->media_handle = NULL;
+                    }
+                }
+            }
         } else if (!msg.is_response && strcmp(msg.method, "BYE") == 0) {
             /* 平台主动 BYE，回 200 并回注册态。 */
             char ok[2048];
