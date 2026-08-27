@@ -119,6 +119,36 @@ SIP 是 GB28181 的事务和会话控制语言。它负责“谁和谁说话、�
 | `BYE` | 结束会话 |
 | `MESSAGE` | Keepalive、Catalog、DeviceInfo 等 XML 消息常用 |
 
+> **两层结构——这是学 GB28181 最关键的一个认知**：SIP 方法（REGISTER/INVITE/MESSAGE/...）和 MESSAGE body 里的业务命令（Keepalive/Catalog/DeviceInfo/DeviceStatus）不是同级的东西。
+>
+> ```
+> SIP 协议层：方法（标准固定，方法名在请求行）
+>   ├─ REGISTER  注册
+>   ├─ INVITE   建会话（实时点播/回放都走它，带 SDP）
+>   ├─ ACK      确认会话
+>   ├─ BYE      结束会话
+>   └─ MESSAGE  传业务消息（容器，本身不限定业务）
+>
+> 业务命令层：MESSAGE 的 XML body 里 <CmdType>（GB28181/MANSCDP 规定）
+>   ├─ Keepalive      保活通知（<Notify>，单向）
+>   ├─ Catalog        目录查询/响应（<Query>/<Response>）
+>   ├─ DeviceInfo     设备信息查询/响应
+>   ├─ DeviceStatus   设备状态查询/响应
+>   ├─ DeviceControl  设备控制（云台/录像/报警）  ← 当前未实现
+>   ├─ RecordInfo     录像列表查询                ← 当前未实现
+>   ├─ Playback/Download（回放/下载，走 INVITE+SDP，但带这些 CmdType）
+>   └─ Alarm/MobilePosition  报警/定位
+> ```
+>
+> 关键点：
+> - Keepalive/Catalog/DeviceInfo/DeviceStatus **不是 SIP 方法**，是塞在 MESSAGE 的 body 里的 XML 命令，靠 `<CmdType>` 区分
+> - 这些命令的 `<CmdType>` 取值和 XML 字段都是 GB28181 标准（MANSCDP）规定的，开发方只能照抄，不能自创字段名
+> - 报文外层看，Keepalive/Catalog/... 完全一样（都是 `MESSAGE sip:` + `Application/MANSCDP+xml`），差别只在 XML body 的 `<CmdType>` 和根元素
+>
+> 为什么这么设计：SIP 方法是标准固定的一组，要加新业务不能自创新方法（对端路由器可能不认）。MESSAGE 是通用容器，语义就是"传一条消息"，具体是什么消息看 body——GB28181 用 MANSCDP+xml 作 body 格式，`<CmdType>` 区分命令。类比 HTTP：方法是 GET/POST 固定，业务命令在 body 里的 JSON 扩展。
+>
+> 命令定义来源：① GB/T 28181 标准正文附录（MANSCDP schema，最权威）；② 开源国标平台 wvp-pro 源码（最实用，看真平台怎么收发）；③ 网上整理文档（查字段最快，但非权威）。当前代码实现了 Keepalive/Catalog/DeviceInfo/DeviceStatus 四种，DeviceControl/RecordInfo/Playback/Alarm 等按同样模式扩展即可。
+
 常见 SIP 头字段：
 
 | 字段 | 作用 |
@@ -1032,6 +1062,22 @@ PS / TS / FLV / MP4 = 包裹箱子
 - RTSP 更偏控制实时拉流会话。
 - GB28181 更偏国标监控体系里的设备接入和平台联动。
 - RTMP 更偏推流链路里的经典直播协议。
+
+### SIP 和 RTSP 起的作用一样吗
+
+表面像（都是信令控制协议、都不传媒体、都建会话用 SDP 协商），但实质不同：
+
+| 维度 | SIP | RTSP |
+|---|---|---|
+| 设计目标 | 通用会话控制（原为 IP 电话，扩展到视频会议/即时消息） | 专为流媒体点播/直播设计 |
+| 会话模型 | 对等会话，双方可互发 INVITE，媒体可双向 | client→server 单向拉流，媒体基本 server→client |
+| 控制粒度 | 会话生命周期（建/改/结束），不关心"播到哪" | 媒体播放控制（PLAY/PAUSE/seek/快进） |
+| 扩展方向 | 用 MESSAGE/OPTIONS/SUBSCRIBE 装任意业务 | 加媒体控制方法，仍在流媒体域 |
+| 有无注册 | 有 REGISTER（设备接入） | 无（client 直接拉流） |
+
+**一句话**：RTSP 是"流媒体遥控器"，SIP 是"会话建立者 + 业务扩展容器"。两者都控制会话、都不传媒体，但 SIP 更通用（对等、可注册、可装任意业务），RTSP 更专一（拉流播放）。
+
+GB28181 选 SIP 而非 RTSP，因为它的需求是"设备接入平台、平台管设备、设备间级联"——这是**对等联网**问题，不是"一个媒体源等被拉流"。RTSP 处理不了设备注册、目录查询、级联，而 SIP 的"对等会话 + MESSAGE 可扩展业务"正好能装 MANSCDP 命令。
 
 ## 8. 当前仓库里的最小 GB28181 模块
 
