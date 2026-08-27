@@ -545,3 +545,95 @@ select(sip_sock, timeout=距最近 deadline 的剩余)
 5. 最后逐个读 `enter_*` / `send_*` 动作函数（理解每个迁移怎么落地）
 6. 对照直线版 `gb28181_sip_register_client.cpp` 的 `main()`，看同样的事务链从直线变成状态机后差在哪
 
+## 10. 从零到看懂的学习路径
+
+第 8、9 节是"代码阅读顺序"（文件级、函数级），本章是"协议基础→代码"的学习路径——一条能落到具体文件:函数上的进阶路线。如果目标是"从不懂 GB28181 到看懂本仓库代码"，按这 6 阶段走。
+
+### 心智模型：两条线一个壳
+
+GB28181 的 Keepalive/Catalog/DeviceInfo/DeviceStatus/SIP 学习时最容易乱，因为它们缠在一起。先记总模型：
+
+```
+SIP = 信令外壳(Via/From/To/Call-ID/CSeq/Content-Type/Content-Length)
+MESSAGE = SIP 的一种方法，外层就是上面这个壳
+XML body = 真正的业务命令，<CmdType> 决定是哪种
+Keepalive/Catalog/DeviceInfo/DeviceStatus = 都是 <CmdType> 的不同值
+```
+
+**关键认知**：Keepalive/Catalog/DeviceInfo/DeviceStatus 本质是同一种东西——SIP MESSAGE 包了一层 XML，差别只在 `<CmdType>`。SIP 本身（REGISTER/INVITE/ACK/BYE）是另一类。理解这点，这五块就不是五个东西，而是"一个 MESSAGE 壳 + 四种 CmdType + SIP 自己的方法"。
+
+### 阶段 1：先看 SIP 报文长什么样（15 分钟）
+
+目标：不学协议栈，先认字。
+
+做法：跑一遍 mock + client（见第 3.2 节），盯着控制台 `===== RX/TX =====` 输出看 SIP 报文原文，别先读代码。重点认 `From/To/Call-ID/CSeq` 四件套（定义一个事务）、`tag`（对话标识）、报文头和 body 之间用空行分隔。
+
+### 阶段 2：理解 SIP 方法和状态码（30 分钟）
+
+目标：REGISTER/MESSAGE/INVITE/ACK/BYE 各自干什么，401/200 各自什么含义。
+
+读 [`../gb28181_study.md`](../gb28181_study.md) 第 2、3 节（最小流程图 + SIP 方法表 + 响应码）。核心流程：`REGISTER→401→REGISTER+Auth→200` / `MESSAGE→200` / `INVITE+SDP→200+SDP→ACK→RTP→BYE→200`。
+
+对应代码：`gb28181_sip_mock_server.cpp` 的 `main()`，按 `REGISTER/MESSAGE/INVITE/ACK/BYE` 五个分支读，看平台对每种方法回什么。
+
+### 阶段 3：啃 Digest 鉴权（45 分钟，难点）
+
+目标：理解 401 之后设备怎么算 Authorization。
+
+读 `gb28181_study.md` 第 3.1 节。要点：平台 401 下发 `WWW-Authenticate: realm/nonce/qop`；设备算 HA1=MD5(user:realm:pass)、HA2=MD5(method:uri)、response=MD5(HA1:nonce:nc:cnonce:qop:HA2)；Authorization 不是密码，是"密码+challenge 算出的响应"。
+
+对应代码（逐函数读）：
+- `gb28181_parse_www_authenticate()`（`module.cpp`）：拆 401 头里的 realm/nonce/qop
+- `gb28181_build_digest_authorization()`（`module.cpp`）：算 HA1/HA2/response，拼 Authorization
+- 运行闭环：`gb28181_sip_register_client.cpp` 的 `main()` 里"第一次 REGISTER→recv 401→parse→build auth→第二次 REGISTER"
+
+验证：Wireshark 抓 `sip`，对照 401 的 `WWW-Authenticate` 和第二次 REGISTER 的 `Authorization`。
+
+### 阶段 4：啃 MESSAGE + XML 的四种 CmdType（45 分钟，核心）
+
+目标：理解 Keepalive/Catalog/DeviceInfo/DeviceStatus 是同一套壳，差别在 XML。
+
+读 `gb28181_study.md` 第 3.2/3.3/3.4 节。关键认知表：
+
+| CmdType | 方向 | XML 根元素 | 回答的问题 |
+|---|---|---|---|
+| Keepalive | 设备→平台 | `<Notify>` | "我还活着吗" |
+| Catalog | 查询→响应 | `<Query>`/`<Response>` | "你有哪些通道" |
+| DeviceInfo | 查询→响应 | `<Query>`/`<Response>` | "你是什么型号/固件" |
+| DeviceStatus | 查询→响应 | `<Query>`/`<Response>` | "你现在在线/编码/录像吗" |
+
+Catalog/DeviceInfo/DeviceStatus 都是"查询+响应"对，外层都是 MESSAGE，差别只在 `<CmdType>` 和响应字段；Keepalive 是单向通知（`<Notify>`），不是查询。
+
+对应代码（这是看懂这四块的关键）：
+- 构造：`gb28181_module.cpp` 的 `build_xml_message()`（公共壳）+ `gb28181_build_message_keepalive/catalog/device_info_query/device_status_query`（四种 CmdType）+ `_catalog_response`/`_device_info`/`_device_status`（三种响应）
+- 解析：`gb28181_extract_xml_tag()`（提取 `<CmdType>`/`<SN>`/`<DeviceID>`）
+- 收发：`gb28181_sip_register_client.cpp` 的 `send_query_and_print_responses()`——看一条 Query 怎么发、收 200、再收 Response MESSAGE、再回 200
+
+怎么读：先读 `build_xml_message()` 理解"所有 MESSAGE 外壳相同"；再看四种 CmdType 函数，发现它们只是换了字符串；最后看响应函数，发现只是 XML 字段不同。**读到这里你会发现这四块本质是一个东西**，这就算懂了。
+
+### 阶段 5：看 mock 怎么扮演平台（30 分钟）
+
+目标：理解平台侧对这五块的处理。
+
+读 `gb28181_sip_mock_server.cpp` 的 `main()` 主循环：REGISTER 分支（解析 Expires/动态 nonce/401/200）、MESSAGE 分支（提取 CmdType 按类型回 Response）、INVITE/ACK/BYE 分支。
+
+进阶（真平台行为，见第 7 节）：`send_platform_catalog_query()`（平台主动下发 Query）、`send_platform_invite()`（平台主动 INVITE 拉流）、stateful 的 REGISTERED 分支（设备怎么响应平台下发）。
+
+### 阶段 6：看 stateful 怎么串成常驻设备（45 分钟）
+
+目标：理解这五块在状态机里怎么驱动。
+
+读 `gb28181_device_stateful.cpp`（第 9 节有完整导读）。对照看：`handle_incoming()` 的 REGISTERED 分支（收到 Query 回 Response、收到 INVITE 回 200+SDP、收到 ACK 推流）、`send_keepalive()`（周期保活 + misses 判掉线）、`handle_state_timeout()` 的 REGISTERED 分支（Keepalive 周期 + 自动 INVITE）。
+
+理解要点：直线版（`register_client`）里这五块"走一遍就退出"；状态机版里是"常驻循环 + 事件驱动"。Keepalive 是周期定时器，Catalog/DeviceInfo/DeviceStatus 是事件响应。
+
+### 学习对照工具
+
+1. 跑 mock + client，盯着日志读代码：每个 `===== TX/RX =====` 对应代码里一次 `send_sip/send_reply`
+2. Wireshark 抓 `sip`：报文字节和代码里 `snprintf` 拼出的文本一一对应
+3. 本文档第 4 节：完整函数能力清单表，读代码时按表查
+
+### 最重要的认知
+
+Catalog/DeviceInfo/DeviceStatus/Keepalive 不是四个独立协议，而是"一个 SIP MESSAGE 壳 + 四种 XML CmdType"。读到阶段 4 一旦发现这点，这五块就全通了。
+

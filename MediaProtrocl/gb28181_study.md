@@ -1784,7 +1784,18 @@ IDR 是一种 I 帧，但 I 帧不一定是 IDR。IDR 的特点是不会引用�
 
 ## 12. 学习顺序建议
 
-建议顺序是：
+如果目标是"从不懂 GB28181 到看懂本仓库代码"，建议按这 6 阶段走（每阶段对应代码入口见 [GB28181/gb28181_code_reference.md](GB28181/gb28181_code_reference.md) 第 10 节）：
+
+1. **先看 SIP 报文长什么样**（15 分钟）：跑 mock + client，盯着 `===== RX/TX =====` 看报文原文，认 `From/To/Call-ID/CSeq` 四件套和 tag。
+2. **理解 SIP 方法和状态码**（30 分钟）：读本文第 2、3 节，认 REGISTER/MESSAGE/INVITE/ACK/BYE 和 401/200。对照 `gb28181_sip_mock_server.cpp` 的五个分支。
+3. **啃 Digest 鉴权**（45 分钟，难点）：读第 3.1 节，理解 HA1/HA2/response。代码入口 `gb28181_parse_www_authenticate` + `gb28181_build_digest_authorization`。
+4. **啃 MESSAGE + XML 四种 CmdType**（45 分钟，核心）：读第 3.2/3.3/3.4 节，理解 Keepalive/Catalog/DeviceInfo/DeviceStatus 是同一套 MESSAGE 壳 + 不同 `<CmdType>`。代码入口 `build_xml_message` + 四个 build_message 函数。
+5. **看 mock 怎么扮演平台**（30 分钟）：读 `gb28181_sip_mock_server.cpp` 的主循环，理解平台侧对这五块的处理。
+6. **看 stateful 怎么串成常驻设备**（45 分钟）：读 `gb28181_device_stateful.cpp`（导读见 code_reference 第 9 节），理解这五块在状态机里怎么驱动。
+
+**最重要的认知**：Catalog/DeviceInfo/DeviceStatus/Keepalive 不是四个独立协议，而是"一个 SIP MESSAGE 壳 + 四种 XML CmdType"。读到阶段 4 一旦发现这点，这五块就全通了。
+
+如果只想快速过一遍最小闭环，原来的简化顺序也成立：
 
 1. 先把 `REGISTER -> INVITE + SDP -> RTP -> BYE` 跑通。
 2. 再补 `401 Digest`。

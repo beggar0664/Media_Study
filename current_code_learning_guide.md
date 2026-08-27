@@ -336,6 +336,8 @@ RTP 分片如何控制 marker/timestamp
 
 ## 6. 分阶段学习目标
 
+如果想要一条"从零到看懂代码"的完整时间路径（6 阶段，每阶段标清读哪个文件/函数），见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md) 第 10 节。本节下面的表是**技能维度**——按一个个技能点推进，适合已有基础、查漏补缺。
+
 建议按这个顺序推进：
 
 | 阶段 | 学习目标 | 验证方式 |
