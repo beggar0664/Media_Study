@@ -1,14 +1,26 @@
 #include "gb28181_module.h"
 
 /*
- * 最小 GB28181 SIP mock 平台。
+ * 最小 GB28181 SIP mock 平台（学习用，非完整 SIP 栈）。
  *
  * 对应文档：
  * - ../gb28181_study.md：REGISTER Digest、MESSAGE、INVITE/SDP 的平台侧响应
  * - ../../current_code_learning_guide.md：如何先启动 mock server 再运行 client
+ * - gb28181_code_reference.md 第 5 节：接收端逐层拆解
  *
- * 这个程序只用于学习信令闭环：收到 REGISTER/MESSAGE/INVITE/ACK/BYE 后返回最小响应。
- * 同时监听 udp/30000，打印最小 RTP 头和 payload 起始字节，便于把信令和媒体对上。
+ * 本程序同时是三个角色（main 主循环 select 三 socket 复用）：
+ *   1. SIP 平台（udp/5060）：收 REGISTER/MESSAGE/INVITE/ACK/BYE 回响应
+ *      - REGISTER：解析 Expires(识别注销)、动态 nonce(401)、注册后主动下发 Query
+ *   2. RTP 接收端（udp/30000）：拆 RTP 头，识别 PS/裸H.264/H.264 FU-A/H.265 FU
+ *      - print_rtp_packet_summary 分流，FU-A 重组状态机(带重排序窗+超时)
+ *   3. RTCP 接收端（udp/30001）：解复合 RTCP，识别 SR/RR/SDES/APP 提取统计
+ *
+ * 平台主动行为（贴近真平台，见 code_reference 第 7 节）：
+ *   - send_platform_catalog_query/invite/device_control_ptz/record_info_query
+ *   - 收到设备 Response 后依次下发 PTZ→RecordInfo→INVITE 拉流
+ *
+ * 阅读顺序：main 主循环 → REGISTER/MESSAGE/INVITE 分支 → print_rtp_packet_summary
+ *          → fu_a_reassembly_handle_packet(is_h265 分支) → print_rtcp_packet_summary
  */
 
 #ifdef _WIN32

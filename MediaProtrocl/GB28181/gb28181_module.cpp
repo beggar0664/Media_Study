@@ -28,6 +28,27 @@
 
 using namespace jrtplib;
 
+/*
+ * 本文件分四层（按职责读，不必从头到尾）：
+ *   1. 配置与生命周期（gb28181_config_t / create/start/stop/destroy）
+ *      - start 的 UDP 分支用 RTPUDPv4Transmitter（绑端口+AddDestination）
+ *      - start 的 TCP 分支：设备作 client，自建 socket connect + RTPTCPAddress
+ *   2. SIP 报文构造（build_register/invite/bye/sdp）
+ *      - build_sdp 按 use_tcp 写 RTP/AVP 或 TCP/RTP/AVP
+ *   3. MESSAGE + XML 命令（build_xml_message + build_message_*）  ← 理解 GB28181 的核心
+ *      - 公共壳 build_xml_message：所有 MESSAGE 外层相同，差别只在 <CmdType>
+ *      - Keepalive/Catalog/DeviceInfo/DeviceStatus 只是换字符串；DeviceControl/RecordInfo 带参数
+ *   4. RTP/PS/分片（send_rtp_packet/send_rtp_payload_fragmented/send_h264_fu_a/send_h265_fu/build_ps_pack_h264）
+ *      - 三层发送原语：单包 < 通用字节切片 < H.264 FU-A / H.265 FU 语义分片
+ *
+ * 三条主线（对照读，理解演进）：
+ *   A. 直线→状态机：gb28181_sip_register_client.cpp(直线) vs gb28181_device_stateful.cpp(状态机)
+ *   B. 单包→真实码流：gb28181_minimal_example.cpp(固定帧) vs stateful 的 media_streaming_tick(逐帧)
+ *   C. 被动→真平台：mock 最初只回响应 vs 现在主动下发 Query/INVITE/PTZ/RecordInfo
+ *
+ * 详细函数清单见 gb28181_code_reference.md 第 4 节，状态机导读见第 9 节，学习路径见第 10 节。
+ */
+
 typedef struct gb28181_context_s {
     /* 模块运行时上下文：保存配置、RTP 会话和发送状态。 */
     gb28181_config_t config;

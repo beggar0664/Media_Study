@@ -1,19 +1,30 @@
 #include "gb28181_module.h"
 
 /*
- * GB28181 设备状态机骨架。
+ * GB28181 设备状态机骨架（常驻生产雏形）。
  *
  * 对应文档：
  * - ../gb28181_study.md 第 14 节：生产设备状态机设计（状态定义与迁移图）
- * - gb28181_code_reference.md 第 7 节：已实现/待补边界
+ * - gb28181_code_reference.md 第 7 节：已实现/待补，第 9 节：状态机代码导读，第 10 节：学习路径
  *
  * 与 gb28181_sip_register_client.cpp 的区别：
- *   - 后者是"直线走完就退出"的学习 demo
+ *   - 后者是"直线走完就退出"的学习 demo（对照主线 A）
  *   - 本文件是状态机驱动的常驻进程：
  *     显式状态 + select 事件循环 + Keepalive 周期 + 指数退避重连 + BYE 后回注册态
  *
  * 复用 gb28181_module.h 的全部信令构造/解析/RTP 发送函数，不重写信令。
- * 媒体本轮仍用固定 demo PS 包，不接真实编码器。
+ * 已具备：真实 .h264 媒体源逐帧推送、RTCP、TCP 承载、响应平台 Query/INVITE/DeviceControl。
+ *
+ * 骨架结构（按此顺序读，详见 code_reference 第 9 节）：
+ *   1. 状态枚举 gb_device_state_t + 上下文 gb_device_ctx_t（字段有行内注释说"为什么需要"）
+ *   2. 媒体帧源 media_frame_source_t（有文件读文件，无文件走合成流）
+ *   3. 带参 SIP 构造 build_register_xxx/invite/ack/bye（CSeq/branch 由 ctx 控制）
+ *   4. 状态迁移 enter_xxx/send_xxx（执行动作 -> 设 deadline -> 切状态）
+ *   5. handle_incoming（按状态解释报文：同一个 200 在不同状态含义不同）
+ *   6. handle_state_timeout（按状态处理超时：REGISTERED 双定时器 keepalive+invite_after）
+ *   7. main 主循环（select 复用 SIP socket + 定时器，单线程不引入多线程）
+ *
+ * 命令行：argv[1]=循环次数 argv[2]=media_file argv[3]=tcp(启用TCP承载)
  */
 
 #ifdef _WIN32
