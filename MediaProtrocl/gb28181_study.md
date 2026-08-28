@@ -134,8 +134,8 @@ SIP 是 GB28181 的事务和会话控制语言。它负责“谁和谁说话、�
 >   ├─ Catalog        目录查询/响应（<Query>/<Response>）
 >   ├─ DeviceInfo     设备信息查询/响应
 >   ├─ DeviceStatus   设备状态查询/响应
->   ├─ DeviceControl  设备控制（云台/录像/报警）  ← 当前未实现
->   ├─ RecordInfo     录像列表查询                ← 当前未实现
+>   ├─ DeviceControl  设备控制（PTZCmd/RecordCmd，根元素 <Control>）  ← 已实现
+>   ├─ RecordInfo     录像列表查询/响应（ISO8601 时间 + RecordList）  ← 已实现
 >   ├─ Playback/Download（回放/下载，走 INVITE+SDP，但带这些 CmdType）
 >   └─ Alarm/MobilePosition  报警/定位
 > ```

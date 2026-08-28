@@ -1041,6 +1041,69 @@ static void send_platform_invite(int sockfd, const struct sockaddr_in *device_ad
     send_reply(sockfd, device_addr, buf);
 }
 
+/*
+ * 平台主动下发 DeviceControl PTZ 控制命令（平台→设备）。
+ * 用固定 PTZCmd 示例（向上转）：A5 0F 00 08 08 00 00 23（标准布局，最后字节为校验和）。
+ * 真实 PTZ 语义解析留后续，这里验证"平台发控制、设备收到"链路。
+ */
+static void send_platform_device_control_ptz(int sockfd, const struct sockaddr_in *device_addr, int cseq)
+{
+    gb28181_config_t cfg;
+    char buf[2048];
+    int len;
+    unsigned char ptz[8] = {0xA5, 0x0F, 0x00, 0x08, 0x08, 0x00, 0x00, 0x00};
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000002000000001");
+    snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
+    snprintf(cfg.username, sizeof(cfg.username), "%s", "34020000002000000001");
+    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "127.0.0.1");
+    cfg.local_sip_port = 5060;
+    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
+    snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
+
+    /* 算校验和：前7字节和 mod 0x100 */
+    {
+        int i, sum = 0;
+        for (i = 0; i < 7; ++i) sum += ptz[i];
+        ptz[7] = (unsigned char)(sum & 0xFF);
+    }
+    len = gb28181_build_message_device_control_ptz(&cfg, cseq, "34020000001320000001",
+                                                     ptz, buf, (int)sizeof(buf));
+    if (len > 0) {
+        printf("===== TX platform DeviceControl PTZ =====\n%s\n", buf);
+        send_reply(sockfd, device_addr, buf);
+    }
+}
+
+/*
+ * 平台主动下发 RecordInfo 查询（查某时段录像列表）。
+ * 设备应回 RecordInfo Response 带 <RecordList>。
+ */
+static void send_platform_record_info_query(int sockfd, const struct sockaddr_in *device_addr, int cseq)
+{
+    gb28181_config_t cfg;
+    char buf[2048];
+    int len;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000002000000001");
+    snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
+    snprintf(cfg.username, sizeof(cfg.username), "%s", "34020000002000000001");
+    snprintf(cfg.sip_server_ip, sizeof(cfg.sip_server_ip), "%s", "127.0.0.1");
+    cfg.local_sip_port = 5060;
+    snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
+    snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
+
+    len = gb28181_build_message_record_info_query(&cfg, cseq, "34020000001320000001",
+                                                    "2026-08-01T00:00:00", "2026-08-02T00:00:00",
+                                                    "all", buf, (int)sizeof(buf));
+    if (len > 0) {
+        printf("===== TX platform RecordInfo Query =====\n%s\n", buf);
+        send_reply(sockfd, device_addr, buf);
+    }
+}
+
 static void build_catalog_response_message(char *buf, int buf_size, int cseq)
 {
     gb28181_config_t cfg;
@@ -1310,7 +1373,10 @@ int main(void)
             /* 判断设备发来的是 Query 还是 Response（看 XML 根元素）。 */
             if (msg.body && strstr(msg.body, "<Response>") != NULL) {
                 /* 设备回的是 Response（对平台下发 Query 的应答）。
-                 * 收到 Catalog Response 后，平台主动 INVITE 拉流（演示被动收流）。 */
+                 * 收到 Catalog Response 后，平台依次下发：
+                 * DeviceControl PTZ 控制、RecordInfo 录像查询、再 INVITE 拉流。 */
+                send_platform_device_control_ptz(sockfd, &peer, msg.cseq + 150);
+                send_platform_record_info_query(sockfd, &peer, msg.cseq + 170);
                 if (!platform_invited) {
                     send_platform_invite(sockfd, &peer, msg.cseq + 200);
                     platform_invited = 1;

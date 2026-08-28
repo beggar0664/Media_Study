@@ -116,6 +116,40 @@ int gb28181_build_message_device_status_query(const gb28181_config_t *config, in
 int gb28181_build_message_device_info(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 /* 设备状态响应：学习用固定字段的最小响应。 */
 int gb28181_build_message_device_status(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+/* DeviceControl 云台控制：根元素 <Control>，带 <PTZCmd> 8 字节十六进制串。
+ * ptz_cmd 指向 8 字节 PTZ 指令（标准布局：A5 0F 指令 水平速 垂直速 变倍速 00 校验和）。
+ * 学习用固定示例指令，不解析。device_id 是被控通道。 */
+int gb28181_build_message_device_control_ptz(const gb28181_config_t *config,
+                                              int cseq,
+                                              const char *device_id,
+                                              const unsigned char ptz_cmd[8],
+                                              char *buf,
+                                              int buf_size);
+/* DeviceControl 录像控制：根元素 <Control>，带 <RecordCmd>。
+ * is_start=1 开录像(Record)，0 停录像(StopRecord)。 */
+int gb28181_build_message_device_control_record(const gb28181_config_t *config,
+                                                int cseq,
+                                                const char *device_id,
+                                                int is_start,
+                                                char *buf,
+                                                int buf_size);
+/* RecordInfo 查询：根元素 <Query>，带 ISO8601 起止时间。
+ * start_time/end_time 格式 YYYY-MM-DDTHH:MM:SS。type 查询类型，常用 "all"。 */
+int gb28181_build_message_record_info_query(const gb28181_config_t *config,
+                                             int cseq,
+                                             const char *device_id,
+                                             const char *start_time,
+                                             const char *end_time,
+                                             const char *type,
+                                             char *buf,
+                                             int buf_size);
+/* RecordInfo 响应：根元素 <Response>，带 SumNum + RecordList。
+ * 学习用固定 Item 列表（2 条示例录像），item 数据在函数内写死，便于验证闭环。 */
+int gb28181_build_message_record_info_response(const gb28181_config_t *config,
+                                                int cseq,
+                                                const char *device_id,
+                                                char *buf,
+                                                int buf_size);
 /* 学习用 XML 片段提取。 */
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size);
 /* SDP / PS / RTP 相关构造与发送。详见 ../gb28181_study.md 的 SDP、RTP、PS over RTP 章节。 */

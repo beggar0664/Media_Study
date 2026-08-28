@@ -392,6 +392,7 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - **RTCP 收发**：发送端 jrtplib 自动发 RTCP（`SetMinimumRTCPTransmissionInterval(1.0)` 学习用 1s），并可显式发 RTCP APP（`gb28181_send_rtcp_app`）。接收端 mock 监听 udp/30001（=RTP 端口+1），`print_rtcp_packet_summary` 解复合 RTCP，识别 SR(200)/RR(201)/SDES(202)/BYE(203)/APP(204)，提取 SR 的 NTP/RTP timestamp/packets/octet 和 RR 的 fraction_lost/lost/jitter。
 - **H.265 FU 分片与重组**（RFC 7798）：`gb28181_send_h265_fu` 发送分片（2字节 NALU 头、type=49 payload header、FU header S/E/FuType）；mock 端重组状态机与 H.264 共用，按 `is_h265` 分支重建 2 字节头（H.264 重建 1 字节）。已验证：mock 识别 H.265 FU，重组还原 `header=0x26 head: 26 01 ...`（对照 H.264 的 `header=0x65`）。
 - **mock 平台行为升级**（贴近真平台）：识别 `Expires:0` 注销（回 200 置未注册，不再是 501）；401 用动态 nonce（每次不同）；**平台主动下发 Catalog Query**（设备回 Response）；**平台主动 INVITE 拉流**（设备回 200+SDP，平台 ACK 后设备推流，被动收流模式）。已验证：stateful 的注销、响应平台 Query、被 INVITE 推流路径全通。
+- **DeviceControl/RecordInfo 命令**（GB/T 28181 MANSCDP）：`gb28181_build_message_device_control_ptz`（根 `<Control>` + `<PTZCmd>` 8字节，含校验和）、`_record`（`<RecordCmd>` Record/StopRecord）；`gb28181_build_message_record_info_query`（根 `<Query>` + ISO8601 起止时间 + Type）、`_response`（`<Response>` + `<SumNum>` + `<RecordList>` 固定 2 条 Item）。mock 主动下发 PTZ/RecordInfo，stateful 收到后回响应。已验证：PTZCmd=`A50F0008080000C4`（校验和正确）、RecordInfo Response 带 RecordList。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 

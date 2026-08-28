@@ -977,10 +977,16 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
             printf("[rx] %s in REGISTERED (keepalive ack)\n", reply_show);
             ctx->keepalive_misses = 0;
         } else if (!msg.is_response && strcmp(msg.method, "MESSAGE") == 0) {
-            /* 平台下发的 MESSAGE：可能是 Query（要回 Response）或 Response（只回 200）。 */
+            /* 平台下发的 MESSAGE：可能是 Query/Control（要回响应）或 Response（只回 200）。 */
             char ok[2048];
             int is_query = (msg.body && strstr(msg.body, "<Query>") != NULL);
-            printf("[rx] platform MESSAGE in REGISTERED (is_query=%d), reply 200\n", is_query);
+            int is_control = (msg.body && strstr(msg.body, "<Control>") != NULL);
+            char cmd_type[64] = {0};
+            if (msg.body) {
+                gb28181_extract_xml_tag(msg.body, "CmdType", cmd_type, sizeof(cmd_type));
+            }
+            printf("[rx] platform MESSAGE in REGISTERED (is_query=%d is_control=%d cmd=%s), reply 200\n",
+                   is_query, is_control, cmd_type[0] ? cmd_type : "<none>");
             snprintf(ok, sizeof(ok),
                 "SIP/2.0 200 OK\r\n"
                 "Via: %s\r\n"
@@ -992,8 +998,9 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
                 msg.via, msg.from, msg.to, msg.call_id, msg.cseq);
             send_sip(ctx->sip_sock, &ctx->remote_addr, ok);
 
-            /* 平台下发 Catalog Query，设备回 Catalog Response MESSAGE（真设备行为）。 */
-            if (is_query) {
+            /* 平台下发的不同命令，设备回对应 Response（真设备行为）。
+             * Catalog/RecordInfo 是 Query（回 Response），DeviceControl 是 Control（只回 200）。 */
+            if (is_query && strcmp(cmd_type, "Catalog") == 0) {
                 char resp[4096];
                 int resp_len;
                 resp_len = gb28181_build_message_catalog_response(&ctx->cfg, (int)ctx->cseq + 50,
@@ -1002,6 +1009,20 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
                     printf("[rx] platform Catalog Query, send Response\n");
                     send_sip(ctx->sip_sock, &ctx->remote_addr, resp);
                 }
+            } else if (is_query && strcmp(cmd_type, "RecordInfo") == 0) {
+                /* 平台查录像列表，设备回 RecordInfo Response 带 RecordList。 */
+                char resp[4096];
+                int resp_len;
+                resp_len = gb28181_build_message_record_info_response(&ctx->cfg, (int)ctx->cseq + 60,
+                                                                       "34020000001320000001",
+                                                                       resp, (int)sizeof(resp));
+                if (resp_len > 0) {
+                    printf("[rx] platform RecordInfo Query, send Response (RecordList)\n");
+                    send_sip(ctx->sip_sock, &ctx->remote_addr, resp);
+                }
+            } else if (is_control && strcmp(cmd_type, "DeviceControl") == 0) {
+                /* 设备控制（PTZ/录像）：已回 200 确认，学习用不实际执行控制。 */
+                printf("[rx] platform DeviceControl, acked (no real control action)\n");
             }
         } else if (!msg.is_response && strcmp(msg.method, "INVITE") == 0) {
             /* 平台主动 INVITE 拉流（被动收流模式）：设备回 200+SDP(a=sendonly)，

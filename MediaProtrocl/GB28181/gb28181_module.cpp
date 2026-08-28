@@ -640,6 +640,242 @@ int gb28181_build_message_device_status(const gb28181_config_t *config, int cseq
         body);
 }
 
+/*
+ * DeviceControl 云台控制构造（GB/T 28181 MANSCDP）。
+ *
+ * 与前面的 Query/Response 不同，DeviceControl 根元素是 <Control>，且 body 带
+ * <PTZCmd> 子命令。PTZCmd 是 8 字节十六进制字符串（标准规定布局）：
+ *   byte0=0xA5(校验位) byte1=0x0F(地址) byte2=指令(方向+镜头)
+ *   byte3=水平速 byte4=垂直速 byte5=变倍速 byte6=0x00 byte7=校验和
+ * 本函数只把传入的 8 字节拼成十六进制串填进去，不解析语义（学习用）。
+ */
+int gb28181_build_message_device_control_ptz(const gb28181_config_t *config,
+                                              int cseq,
+                                              const char *device_id,
+                                              const unsigned char ptz_cmd[8],
+                                              char *buf,
+                                              int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !device_id || !ptz_cmd || !buf || buf_size <= 0) {
+        return -1;
+    }
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Control>\r\n"
+        "<CmdType>DeviceControl</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<PTZCmd>%02X%02X%02X%02X%02X%02X%02X%02X</PTZCmd>\r\n"
+        "</Control>\r\n",
+        cseq, device_id,
+        ptz_cmd[0], ptz_cmd[1], ptz_cmd[2], ptz_cmd[3],
+        ptz_cmd[4], ptz_cmd[5], ptz_cmd[6], ptz_cmd[7]);
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len, body);
+}
+
+/*
+ * DeviceControl 录像控制：根元素 <Control>，带 <RecordCmd>。
+ * is_start=1 -> Record（开录像），0 -> StopRecord（停录像）。
+ */
+int gb28181_build_message_device_control_record(const gb28181_config_t *config,
+                                                int cseq,
+                                                const char *device_id,
+                                                int is_start,
+                                                char *buf,
+                                                int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !device_id || !buf || buf_size <= 0) {
+        return -1;
+    }
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Control>\r\n"
+        "<CmdType>DeviceControl</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<RecordCmd>%s</RecordCmd>\r\n"
+        "</Control>\r\n",
+        cseq, device_id, is_start ? "Record" : "StopRecord");
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len, body);
+}
+
+/*
+ * RecordInfo 查询：根元素 <Query>，带 ISO8601 起止时间和查询类型。
+ * start_time/end_time 格式 YYYY-MM-DDTHH:MM:SS。type 常用 "all"/"event"/"alarm"。
+ * 用于查某设备某时段的历史录像列表，设备应回 RecordInfo Response 带 <RecordList>。
+ */
+int gb28181_build_message_record_info_query(const gb28181_config_t *config,
+                                             int cseq,
+                                             const char *device_id,
+                                             const char *start_time,
+                                             const char *end_time,
+                                             const char *type,
+                                             char *buf,
+                                             int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !device_id || !start_time || !end_time || !buf || buf_size <= 0) {
+        return -1;
+    }
+    if (!type || type[0] == '\0') {
+        type = "all";
+    }
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Query>\r\n"
+        "<CmdType>RecordInfo</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<StartTime>%s</StartTime>\r\n"
+        "<EndTime>%s</EndTime>\r\n"
+        "<Type>%s</Type>\r\n"
+        "<Secrecy>0</Secrecy>\r\n"
+        "<IndistinctQuery>0</IndistinctQuery>\r\n"
+        "</Query>\r\n",
+        cseq, device_id, start_time, end_time, type);
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len, body);
+}
+
+/*
+ * RecordInfo 响应：根元素 <Response>，带 SumNum + RecordList。
+ * 学习用固定 2 条录像 Item（不读真实录像文件），便于验证"查录像→回列表"闭环。
+ * 真实平台对接时这里应填真实录像索引。
+ */
+int gb28181_build_message_record_info_response(const gb28181_config_t *config,
+                                                int cseq,
+                                                const char *device_id,
+                                                char *buf,
+                                                int buf_size)
+{
+    char body[2048];
+    int body_len;
+
+    if (!config || !device_id || !buf || buf_size <= 0) {
+        return -1;
+    }
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Response>\r\n"
+        "<CmdType>RecordInfo</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<Name>MockRecord</Name>\r\n"
+        "<SumNum>2</SumNum>\r\n"
+        "<RecordList Num=\"2\">\r\n"
+        "<Item>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<StartTime>2026-08-01T08:00:00</StartTime>\r\n"
+        "<EndTime>2026-08-01T08:30:00</EndTime>\r\n"
+        "<Name>record-01</Name>\r\n"
+        "</Item>\r\n"
+        "<Item>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<StartTime>2026-08-01T09:00:00</StartTime>\r\n"
+        "<EndTime>2026-08-01T09:15:00</EndTime>\r\n"
+        "<Name>record-02</Name>\r\n"
+        "</Item>\r\n"
+        "</RecordList>\r\n"
+        "</Response>\r\n",
+        cseq, device_id, device_id, device_id);
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len, body);
+}
+
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size)
 {
     /* 只做最小标签提取，便于 mock server 学习命令解析。 */
