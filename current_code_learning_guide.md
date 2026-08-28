@@ -366,6 +366,7 @@ RTP 分片如何控制 marker/timestamp
 9. RTCP 收发：发送端 jrtplib 自动发 RTCP（1s 间隔）+ 可显式发 APP；接收端 mock 监听 udp/30001，解析 SR/RR/SDES/BYE/APP 并提取统计字段。
 10. H.265 FU 分片与重组（RFC 7798）：与 H.264 FU-A 同级，2字节 NALU 头/type=49/FuType 6位；重组状态机 H.264/H.265 共用，按 is_h265 分支重建头。
 11. mock 平台行为升级：识别 Expires:0 注销、动态 nonce、平台主动下发 Catalog Query、平台主动 INVITE 拉流（被动收流），贴近真平台为联调做准备。
+12. RTP over TCP 承载：设备作 TCP client 模式，自建 socket connect 到平台，SDP 写 TCP/RTP/AVP+setup:active，jrtplib RTPTCPTransmitter。已验证 SDP 协商与 session 创建。
 
 逐函数能力清单、接收端状态机机制和输出文件说明见 [MediaProtrocl/GB28181/gb28181_code_reference.md](MediaProtrocl/GB28181/gb28181_code_reference.md)。
 
@@ -373,8 +374,8 @@ RTP 分片如何控制 marker/timestamp
 
 1. RTCP 统计上报：当前已能收发 RTCP（SR/RR/SDES/APP 识别 + 字段提取），但未做丢包率/抖动/RTT 持续性统计上报。
 2. H.265 SDP 协商：当前 H.265 已支持 FU 分片/重组，但 SDP 仍写 H264，编码协商待补。
-3. RTP over TCP：国标主动拉流 / 被动收流模式（当前仅 UDP）。
-4. 对接真实 GB28181 平台：mock 已升级到贴近真平台（支持注销、平台主动 Query/INVITE、动态 nonce），下一步对接 wvp-pro 或厂商平台验证。
+3. TCP 接收端 + 设备作 server：当前 TCP 只做 client 模式发送，mock 不收 TCP；设备作 server 的 listen/accept 留后续。
+4. 对接真实 GB28181 平台：mock 已升级到贴近真平台（支持注销、平台主动 Query/INVITE、动态 nonce、TCP 发送），下一步对接 wvp-pro 或厂商平台验证。
 
 生产设备状态机设计的具体路线见 [MediaProtrocl/gb28181_study.md](MediaProtrocl/gb28181_study.md) 第 14 节。
 

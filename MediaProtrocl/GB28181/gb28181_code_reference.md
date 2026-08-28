@@ -393,12 +393,13 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - **H.265 FU 分片与重组**（RFC 7798）：`gb28181_send_h265_fu` 发送分片（2字节 NALU 头、type=49 payload header、FU header S/E/FuType）；mock 端重组状态机与 H.264 共用，按 `is_h265` 分支重建 2 字节头（H.264 重建 1 字节）。已验证：mock 识别 H.265 FU，重组还原 `header=0x26 head: 26 01 ...`（对照 H.264 的 `header=0x65`）。
 - **mock 平台行为升级**（贴近真平台）：识别 `Expires:0` 注销（回 200 置未注册，不再是 501）；401 用动态 nonce（每次不同）；**平台主动下发 Catalog Query**（设备回 Response）；**平台主动 INVITE 拉流**（设备回 200+SDP，平台 ACK 后设备推流，被动收流模式）。已验证：stateful 的注销、响应平台 Query、被 INVITE 推流路径全通。
 - **DeviceControl/RecordInfo 命令**（GB/T 28181 MANSCDP）：`gb28181_build_message_device_control_ptz`（根 `<Control>` + `<PTZCmd>` 8字节，含校验和）、`_record`（`<RecordCmd>` Record/StopRecord）；`gb28181_build_message_record_info_query`（根 `<Query>` + ISO8601 起止时间 + Type）、`_response`（`<Response>` + `<SumNum>` + `<RecordList>` 固定 2 条 Item）。mock 主动下发 PTZ/RecordInfo，stateful 收到后回响应。已验证：PTZCmd=`A50F0008080000C4`（校验和正确）、RecordInfo Response 带 RecordList。
+- **RTP over TCP 承载**（设备作 TCP client 模式）：`gb28181_start` 加 TCP 分支——自建 TCP socket connect 到平台 `remote_rtp_ip:port`，把已连接 fd 交给 jrtplib `RTPTCPTransmitter`（`RTPTCPAddress(sock)`）；SDP 写 `TCP/RTP/AVP` + `a=setup:active` + `a=connection:new`。已验证：SDP 协商正确、`Create(TCP)` 不再 return -2。mock 接收端暂不支持 TCP（UDP-only），设备作 TCP server 的 listen 模式留后续。命令行第三参数 `tcp` 启用。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
 - RTCP 统计上报：当前只打印 RTCP 字段，未做丢包率/抖动/RTT 的持续性统计上报
 - H.265 SDP 协商：当前 SDP 仍写 `H264`，H.265 只在 FU 层支持，编码协商留后续
-- RTP over TCP：国标主动拉流/被动收流（当前仅 UDP，`use_tcp` 返回 -2）
+- TCP 接收端 + 设备作 server：当前 TCP 只做 client 模式发送，mock 不收 TCP；设备作 server 的 listen/accept 留后续
 - 真实平台互操作：mock 已贴近真平台，下一步对接 wvp-pro 或厂商平台验证兼容性
 
 ## 8. 阅读顺序建议

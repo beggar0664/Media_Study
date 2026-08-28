@@ -1349,6 +1349,7 @@ int main(int argc, char **argv)
     gb_device_ctx_t ctx;
     int max_cycles = 2;  /* 默认演示 2 次 INVITE/BYE 循环后注销退出 */
     const char *media_file = NULL;  /* 默认无文件，走内置合成流 */
+    int use_tcp = 0;  /* 默认 UDP 承载 */
 
     if (argc > 1) {
         max_cycles = atoi(argv[1]);
@@ -1358,6 +1359,9 @@ int main(int argc, char **argv)
     }
     if (argc > 2) {
         media_file = argv[2];
+    }
+    if (argc > 3 && argv[3] && strcmp(argv[3], "tcp") == 0) {
+        use_tcp = 1;  /* 第三参数 tcp 启用 RTP over TCP 承载 */
     }
 
     if (init_winsock() != 0) {
@@ -1385,6 +1389,7 @@ int main(int argc, char **argv)
     ctx.cfg.payload_type = 96;
     ctx.cfg.ssrc = 0x12345678;
     ctx.ssrc = 0x12345678;
+    ctx.cfg.use_tcp = use_tcp;
     if (media_file) {
         snprintf(ctx.media_file, sizeof(ctx.media_file), "%s", media_file);
     }
@@ -1399,11 +1404,12 @@ int main(int argc, char **argv)
 #endif
 
     printf("===== GB28181 stateful device starting =====\n");
-    printf("local=%s:%d server=%s:%d target=%s cycles=%d media=%s\n",
+    printf("local=%s:%d server=%s:%d target=%s cycles=%d media=%s transport=%s\n",
            ctx.cfg.local_ip, ctx.cfg.local_sip_port,
            ctx.cfg.sip_server_ip, ctx.cfg.sip_server_port,
            ctx.invite_target, ctx.invite_cycles_max,
-           ctx.media_file[0] ? ctx.media_file : "<builtin>");
+           ctx.media_file[0] ? ctx.media_file : "<builtin>",
+           ctx.cfg.use_tcp ? "TCP" : "UDP");
     printf("Ctrl+C to stop\n");
 
     /* 首次启动：直接进入注册（无退避）。 */

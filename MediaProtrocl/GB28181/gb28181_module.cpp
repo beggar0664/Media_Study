@@ -10,6 +10,8 @@
 #include "rtpsession.h"
 #include "rtpsessionparams.h"
 #include "rtpudpv4transmitter.h"
+#include "rtptcptransmitter.h"
+#include "rtptcpaddress.h"
 
 #include <ctype.h>
 #include <stddef.h>
@@ -145,13 +147,14 @@ gb28181_handle_t gb28181_create(const gb28181_config_t *config)
 
 int gb28181_start(gb28181_handle_t handle)
 {
-    /* 启动 RTP 会话：创建 jrtplib session、绑定端口、添加远端地址。 */
+    /* 启动 RTP 会话：创建 jrtplib session、绑定端口、添加远端地址。
+     * UDP：jrtplib 自己绑端口 + AddDestination(IP,port)。
+     * TCP：jrtplib 的 TCP transmitter 需要一个已连接的 socket fd，
+     *      所以本函数自己先 socket()+connect() 到平台，再把 fd 给 jrtplib。
+     *      这是"设备作 TCP client 主动连平台"模式（GB28181 被动收流的常见形态）。 */
     gb28181_context_t *ctx = (gb28181_context_t *)handle;
     if (!ctx || ctx->started) {
         return ctx ? 0 : -1;
-    }
-    if (ctx->config.use_tcp) {
-        return -2;
     }
 
 #ifdef _WIN32
@@ -177,36 +180,100 @@ int gb28181_start(gb28181_handle_t handle)
      * 生产环境通常保留 5s。这行只是配置，不手写 RTCP 协议。 */
     session_params.SetMinimumRTCPTransmissionInterval(RTPTime(1.0));
 
-    RTPUDPv4TransmissionParams trans_params;
-    trans_params.SetPortbase((uint16_t)cfg_local_rtp_port(&ctx->config));
-
-    uint32_t bind_ip = inet_addr(cfg_local_ip(&ctx->config));
-    if (bind_ip != INADDR_NONE) {
-        trans_params.SetBindIP(ntohl(bind_ip));
-    }
-
     RTPSession *session = new RTPSession();
-    int status = session->Create(session_params, &trans_params, RTPTransmitter::IPv4UDPProto);
-    if (status < 0) {
-        printf("[gb28181] RTPSession::Create failed: %d\n", status);
-        delete session;
-        return status;
+    int status;
+
+    if (ctx->config.use_tcp) {
+        /* ---- TCP 承载分支 ----
+         * 设备作 client，主动 connect 到平台的 RTP TCP 端口。
+         * 建好连接后把 socket fd 交给 jrtplib 的 RTPTCPTransmitter。 */
+        RTPTCPTransmissionParams trans_params;
+        status = session->Create(session_params, &trans_params, RTPTransmitter::TCPProto);
+        if (status < 0) {
+            printf("[gb28181] RTPSession::Create(TCP) failed: %d\n", status);
+            delete session;
+            return status;
+        }
+
+        /* 自建 TCP socket 并 connect 到平台 remote_rtp_ip:remote_rtp_port。 */
+        int tcp_sock = (int)socket(AF_INET, SOCK_STREAM, 0);
+        if (tcp_sock < 0) {
+            printf("[gb28181] TCP socket creation failed\n");
+            session->Destroy();
+            delete session;
+            return -5;
+        }
+        struct sockaddr_in tcp_addr;
+        memset(&tcp_addr, 0, sizeof(tcp_addr));
+        tcp_addr.sin_family = AF_INET;
+        tcp_addr.sin_port = htons((u_short)cfg_remote_rtp_port(&ctx->config));
+#ifdef _WIN32
+        tcp_addr.sin_addr.s_addr = inet_addr(cfg_remote_rtp_ip(&ctx->config));
+#else
+        inet_pton(AF_INET, cfg_remote_rtp_ip(&ctx->config), &tcp_addr.sin_addr);
+#endif
+        if (connect(tcp_sock, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) < 0) {
+            printf("[gb28181] TCP connect to %s:%d failed\n",
+                   cfg_remote_rtp_ip(&ctx->config), cfg_remote_rtp_port(&ctx->config));
+#ifdef _WIN32
+            closesocket(tcp_sock);
+#else
+            close(tcp_sock);
+#endif
+            session->Destroy();
+            delete session;
+            return -6;
+        }
+        printf("[gb28181] TCP connected to %s:%d\n",
+               cfg_remote_rtp_ip(&ctx->config), cfg_remote_rtp_port(&ctx->config));
+
+        /* 把已连接的 socket fd 交给 jrtplib，后续 SendPacket 走这条 TCP。 */
+        RTPTCPAddress dest((SocketType)tcp_sock);
+        status = session->AddDestination(dest);
+        if (status < 0) {
+            printf("[gb28181] TCP AddDestination failed: %d\n", status);
+#ifdef _WIN32
+            closesocket(tcp_sock);
+#else
+            close(tcp_sock);
+#endif
+            session->Destroy();
+            delete session;
+            return status;
+        }
+    } else {
+        /* ---- UDP 承载分支（原逻辑） ---- */
+        RTPUDPv4TransmissionParams trans_params;
+        trans_params.SetPortbase((uint16_t)cfg_local_rtp_port(&ctx->config));
+
+        uint32_t bind_ip = inet_addr(cfg_local_ip(&ctx->config));
+        if (bind_ip != INADDR_NONE) {
+            trans_params.SetBindIP(ntohl(bind_ip));
+        }
+
+        status = session->Create(session_params, &trans_params, RTPTransmitter::IPv4UDPProto);
+        if (status < 0) {
+            printf("[gb28181] RTPSession::Create(UDP) failed: %d\n", status);
+            delete session;
+            return status;
+        }
+
+        uint32_t remote_ip = inet_addr(cfg_remote_rtp_ip(&ctx->config));
+        if (remote_ip == INADDR_NONE) {
+            session->Destroy();
+            delete session;
+            return -3;
+        }
+        RTPIPv4Address dest(ntohl(remote_ip), (uint16_t)cfg_remote_rtp_port(&ctx->config));
+        status = session->AddDestination(dest);
+        if (status < 0) {
+            printf("[gb28181] RTPSession::AddDestination failed: %d\n", status);
+            session->Destroy();
+            delete session;
+            return status;
+        }
     }
 
-    uint32_t remote_ip = inet_addr(cfg_remote_rtp_ip(&ctx->config));
-    if (remote_ip == INADDR_NONE) {
-        session->Destroy();
-        delete session;
-        return -3;
-    }
-    RTPIPv4Address dest(ntohl(remote_ip), (uint16_t)cfg_remote_rtp_port(&ctx->config));
-    status = session->AddDestination(dest);
-    if (status < 0) {
-        printf("[gb28181] RTPSession::AddDestination failed: %d\n", status);
-        session->Destroy();
-        delete session;
-        return status;
-    }
     session->SetDefaultPayloadType((uint8_t)ctx->config.payload_type);
 
     ctx->rtp_session = session;
@@ -283,6 +350,29 @@ int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, c
      */
     if (!config || !buf || buf_size <= 0 || !ssrc) {
         return -1;
+    }
+    if (config->use_tcp) {
+        /* TCP 承载：m= 用 TCP/RTP/AVP，setup:active 表示设备主动连平台，
+         * connection:new 表示新建 TCP 连接（GB28181 TCP 被动收流常见写法）。 */
+        return snprintf(buf, buf_size,
+            "v=0\r\n"
+            "o=%s 0 0 IN IP4 %s\r\n"
+            "s=Play\r\n"
+            "c=IN IP4 %s\r\n"
+            "t=0 0\r\n"
+            "m=video %d TCP/RTP/AVP %d\r\n"
+            "a=sendonly\r\n"
+            "a=setup:active\r\n"
+            "a=connection:new\r\n"
+            "a=rtpmap:%d H264/90000\r\n"
+            "a=ssrc:%s\r\n",
+            config->local_id,
+            cfg_local_ip(config),
+            cfg_local_ip(config),
+            cfg_local_rtp_port(config),
+            config->payload_type,
+            config->payload_type,
+            ssrc);
     }
     return snprintf(buf, buf_size,
         "v=0\r\n"
