@@ -249,6 +249,12 @@ Catalog 响应是**学习用固定两条目录项**，不是动态设备树。�
 
 三者关系：单包原语 < 通用字节切片 < H.264 语义分片。`timestamp_inc` 是"发完当前包后时间戳增量"，不是绝对 PTS。
 
+**通用字节分包 vs 语义分包**（最易混的点，完整对照见 `gb28181_study.md` 10.2 节末尾）：
+- 通用字节分包（`send_rtp_payload_fragmented`）：不理解 payload，按大小机械切块，不改一字节。**用于 PS over RTP**——PS pack 是完整容器，切它像切连续字节。
+- 语义分包（`send_h264_fu_a`/`send_h265_fu`）：理解输入是 NALU，跳过原头，每片加 FU indicator + FU header。**用于裸 H.264/H.265 NALU**——NALU 有头要保留，从中间切会丢头。
+- 抓包对照：通用分包片开头 `00 00 01 BA`（PS 原样），FU-A 片开头 `7C 85`（FU 头，原 0x65 被替换）。
+- 接收端必须区分：mock `print_rtp_packet_summary` 按开头分流 PS/FU-A/FU。语义分包必须配语义重组，否则拼出 `7C xx 7C xx` 废数据。
+
 ### 4.6 PS/PES 打包
 
 | 函数 | 做什么 |

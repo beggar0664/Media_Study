@@ -1446,6 +1446,33 @@ seq=31730 timestamp=1142747095 marker=1 payload_len=69
 
 抓包学习时可以直接看 RTP payload 开头：如果是 `65`，说明 payload 是 H.264 IDR NALU；如果是 `00 00 01 BA`，说明 payload 是 PS pack。
 
+#### 通用字节分包 vs 语义分包
+
+GB28181 媒体层有两种 RTP 分包方式，对应两种承载，这是最易混的点：
+
+| 维度 | 通用字节分包（`send_rtp_payload_fragmented`） | 语义分包（`send_h264_fu_a` / `send_h265_fu`） |
+|---|---|---|
+| 理解 payload 吗 | 不理解，当一段字节 | 理解，知道是 H.264/H.265 NALU |
+| 改写 payload 内容吗 | 不改，原样切 | 改写：跳过原 NALU 头，加 FU indicator + FU header |
+| 每片开销 | 0（纯切） | 2 字节（H.264）/ 3 字节（H.265） |
+| 输入要求 | 任意字节流 | 必须是裸 NALU（带 NALU 头） |
+| 适合场景 | PS pack 切片（PS over RTP） | 裸 H.264/H.265 NALU 切片 |
+| 接收端怎么拼 | 按 seq 顺序拼回原字节 | 按 S/E 位识别首末，重建 NALU 头 |
+
+**一句话**：通用字节分包是"切香肠"（不关心内容），语义分包是"拆 NALU"（理解结构、加协议头、接收端按 S/E 重建）。
+
+**为什么需要两种**：GB28181 有两种媒体承载：
+- PS over RTP：`H.264 NALU -> PES -> PS pack -> [通用字节分包]`。PS pack 是完整容器包，没有"NALU 头"要保留，切它就像切连续字节，接收端按顺序拼回即可。
+- 裸 H.264 over RTP：`H.264 NALU -> [FU-A 语义分包]`。NALU 有头字节，从中间切开就丢头了，必须用语义分包——每片加 FU 头告诉接收端"这是第几片"，末片拼起来重建原始 NALU 头。
+
+**抓包对照**（mock 日志可查）：
+- 通用分包收到的片：`payload head: 00 00 01 BA ...`（PS pack 原样）
+- FU-A 分包收到的片：`payload head: 7C 85 ...`（FU indicator + FU header，原 0x65 头被替换）
+
+**接收端必须区分**：mock 的 `print_rtp_packet_summary` 按开头字节分流——`00 00 01 BA` 走 PS 拆层，type=28 走 H.264 FU 重组，type=49 走 H.265 FU 重组。如果把 FU-A 当通用字节拼回去，会得到 `7C xx 7C xx ...` 的废数据（FU 头混进 NALU 数据里）。所以**语义分包必须配语义重组，成对出现**。
+
+代码对照见 `gb28181_module.cpp` 的 `send_rtp_payload_fragmented`（1596 行注释"不理解 payload"）和 `send_h264_fu_a`（1652 行注释"理解输入是 H.264"），函数清单见 `gb28181_code_reference.md` 第 4.5 节。
+
 ### 10.3 裸 H.264 FU-A 分片
 
 裸 H.264 over RTP 还有一种标准分片方式叫 `FU-A`。它不是 PS 分片，而是把一个过大的 H.264 NALU 拆成多个 RTP payload。
