@@ -210,6 +210,36 @@ sequenceDiagram
 
 对应到代码，就是 `gb28181_parse_www_authenticate()` 先拆 challenge，再由 `gb28181_build_digest_authorization()` 拼出 `Authorization`。
 
+#### 三次 MD5 的细节（代码 1436-1446 行）
+
+Digest 不是一次 MD5，是三次，各防一种泄露：
+
+```
+HA1  = MD5( username : realm : password )           // 平台可预存 HA1，不存明文密码
+HA2  = MD5( method : uri )                           // 绑定方法和 URI，防响应被剪贴到别的请求重放
+resp = MD5( HA1 : nonce : [nc:cnonce:qop:] HA2 )    // nonce 每次不同 → 防重放
+```
+
+有 `qop=auth`（RFC 2617 新版）和无 qop（RFC 2069 老版）走两条路径（代码 1441-1445）：
+
+```
+有 qop:  resp = MD5(HA1 : nonce : nc : cnonce : qop : HA2)   // 6 段，nc 递增 + cnonce 随机
+无 qop:  resp = MD5(HA1 : nonce : HA2)                        // 3 段
+```
+
+有 qop 更安全：nc 每次递增 + cnonce 客户端随机，平台能验"这个 nonce 用过没、nc 是否递增"，老版 nonce 被截获可重放。
+
+#### 代码里的固定值边界（学习用，生产不能这样）
+
+- `nc = "00000001"`（1423 行）：nonce count 固定 1。生产应递增，平台据此判重放
+- `cnonce = "gb28181"`（1442 行）：客户端随机数固定。生产应真随机
+- 这两个固定值在 mock 闭环能跑，真平台可能因 nc 不递增而拒鉴权
+- `algorithm`/`qop` 输出不带引号（1450 行），有些平台对引号敏感
+
+#### Windows 下 MD5 怎么算（1085-1120 行）
+
+用 CryptoAPI（`CryptAcquireContext`/`CryptCreateHash`/`CryptHashData`/`CryptGetHashParam`），不是自己实现 MD5。`md5_hex` 把 16 字节摘要转 32 字符十六进制串。非 Windows 是桩（`strcpy(out_hex,"000...0")`），所以非 Windows 平台鉴权实际跑不通——这是当前代码的边界。
+
 当前最小模块已经补了两块底座：
 
 - `gb28181_parse_www_authenticate()`：解析 `realm` / `nonce` / `qop` / `opaque` / `algorithm`
@@ -1675,6 +1705,36 @@ H.264 重组头是 1 字节 `0x65`，H.265 重组头是 2 字节 `26 01`——�
 
 当前重排序窗口已实现数据暂存（`FU_A_REORDER_WINDOW_SIZE=8`），剩余的工程化项主要是窗口大小自适应、更大 NALU 的 buffer 扩容和与真实解码器的对接。
 
+#### 重排序窗口为什么需要（代码 271-330 行）
+
+网络会乱序。一个 NALU 被切成 5 片 seq=10,11,12,13,14，若 11 先到 10 后到：
+
+- 直觉做法：11 到就追加 → 但 10 没到，拼出来缺首片头，NALU 报废
+- 正确做法：11 先暂存，等 10 到了再按 10→11→12 顺序追加
+
+这就是重排序窗口——"先暂存乱序包，等期望包补齐再按序刷出"的缓冲。
+
+数据结构（162-184 行）：8 个 slot，每个独立存 `seq/used/data[1500]/len/fu_end`，避免数据指针失效。
+
+`fu_a_reorder_push`（271-303 行）暂存：找一个空 slot，存 seq 和数据（跳过 FU 头），只暂存"期望包之后、窗口内"的包（主逻辑 `fwd = seq - expected_seq`，要求 `1 <= fwd <= 8`）。
+
+`fu_a_reorder_drain`（309-330 行）按序刷出：连续找 `seq == expected_seq` 的暂存包，追加到 buffer 并 `expected_seq++`，直到遇到空洞或刷出末片。
+
+主逻辑里怎么用（422-478 行）：
+
+```text
+期望 seq=10，网络乱序来了 11、12、13：
+  11 到: fwd=1 ≤ 8 → push slot0
+  12 到: fwd=2 ≤ 8 → push slot1
+  13 到: fwd=3 ≤ 8 → push slot2
+  10 到: seq==expected → 追加 10，expected=11 → drain:
+         找到 11 → 追加，expected=12
+         找到 12 → 追加，expected=13
+         找到 13 → 追加，若是末片则 output+reset
+```
+
+边界保护：墙钟超时（`FU_A_REASSEMBLY_TIMEOUT_MS=2000ms`）判丢末片；`pending_fragments >= 64` 判超限；`timestamp/ssrc 变`判新 NALU 丢旧上下文。防止"上一组残留状态一直挂到下一组首片才被覆盖"。
+
 当前状态机已经提供完整 NALU 输出接口：重组完成时会调用 `fu_a_nalu_output_cb`，把裸 NALU、`nalu_size`、`timestamp`、`ssrc` 和调用方注册的 `user_data` 一起送出。这样上层可以把重组后的 NALU 直接交给解码器或写文件，而不必再从日志里捞。
 
 ```text
@@ -1977,3 +2037,32 @@ STREAMING 阶段已接入真实媒体源：从本地 `.h264`(Annex-B) 文件逐�
 - RTCP 统计持续性上报（收发已通，见第 6 节）、H.265、TCP 承载
 
 代码能力清单与运行方式见 [GB28181/gb28181_code_reference.md](GB28181/gb28181_code_reference.md) 第 3.5 节和第 7 节。
+
+### 14.5 RTP over TCP 承载：为什么当前做 client 而不是 server
+
+GB28181 的 RTP over TCP 有两种模式：
+
+| 模式 | 设备角色 | SDP | 国标常见度 |
+|---|---|---|---|
+| 被动（passive） | TCP server，平台主动连设备 | `a=setup:passive` | 更常见 |
+| 主动（active） | TCP client，设备主动连平台 | `a=setup:active` | 当前代码做的 |
+
+当前代码做 active（设备作 client），不是选错，是两个权衡：
+
+1. **jrtplib 的 TCP transmitter 天然是 client 模式**：它用 `RTPTCPAddress(socket_fd)`，需要传入一个**已连接的** socket fd。jrtplib 不负责建连接，要自己 `socket()+connect()` 建好再给它——这天然适合 client 主动连 server。
+2. **设备作 server 需要 listen/accept**：被动模式要自己 `socket()+bind()+listen()+accept()` 等平台来连，是额外 socket 编程，jrtplib 不帮做。当前为了先验证 TCP 链路，选了 jrtplib 原生支持的 client 模式，工程量小。
+
+当前代码已验证：SDP 写 `TCP/RTP/AVP` + `a=setup:active` + `a=connection:new`（`gb28181_build_sdp` 的 TCP 分支），`gb28181_start` 自建 socket connect 后把 fd 交给 `RTPTCPTransmitter`。`Create(TCP)` 不再 return -2。
+
+被动模式（设备作 server）的完整流程留后续：
+
+```text
+1. SDP 写 a=setup:passive（告诉平台：我是 server，你来连）
+2. 设备 socket()+bind(local_rtp_port)+listen()
+3. 平台收到 200+SDP 后，主动 connect 到设备 local_ip:local_rtp_port
+4. 设备 accept() 得到连接 fd
+5. 把 accept 的 fd 交给 jrtplib RTPTCPTransmitter
+6. 后续 RTP 走这条 TCP
+```
+
+当前代码做了第 1 步的反向（active）、第 5-6 步（client 版），缺第 2-4 步（server 版的 listen/accept）。这就是 code_reference 第 7.2 节"设备作 server 的 listen/accept 留后续"的来源。
