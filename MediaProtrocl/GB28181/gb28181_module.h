@@ -31,6 +31,8 @@ typedef struct {
     int media_port;          /* local_rtp_port 的兼容别名。 */
     char stream_id[64];
     int payload_type;
+    char codec[16];          /* 编码类型：H264 / H265，SDP a=rtpmap 用。默认 H264。 */
+    char session_name[16];   /* 会话类型：Play / Playback / Download，SDP s= 用。默认 Play。 */
     int use_tcp;
     int enable_dump;
     unsigned int ssrc;

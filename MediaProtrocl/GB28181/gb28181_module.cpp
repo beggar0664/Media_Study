@@ -71,6 +71,8 @@ static void gb28181_init_default_config(gb28181_config_t *cfg)
     cfg->local_rtp_port = 10000;
     cfg->media_port = 10000;
     cfg->payload_type = 96;
+    snprintf(cfg->codec, sizeof(cfg->codec), "%s", "H264");
+    snprintf(cfg->session_name, sizeof(cfg->session_name), "%s", "Play");
     cfg->use_tcp = 0;
     cfg->enable_dump = 0;
     cfg->ssrc = 0x12345678;
@@ -365,52 +367,71 @@ int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, c
      * 生成最小 SDP：告诉对端视频类型、RTP 端口、payload type、方向和 SSRC。
      * 这些字段要和后续 RTP 包对应起来看：
      *   m=video <port> RTP/AVP <pt>  -> UDP 目的端口和 RTP payload type
-     *   a=rtpmap:<pt> H264/90000     -> pt 的编码语义和 RTP timestamp 时钟
+     *   a=rtpmap:<pt> <codec>/90000  -> pt 的编码语义和 RTP timestamp 时钟（H264/H265）
      *   a=ssrc:<ssrc>                -> RTP header 里的 SSRC
-     * 注意：GB28181 常见实际负载是 PS over RTP，SDP 说明编码是 H.264，RTP payload 里可以先看到 PS 头 00 00 01 BA。
+     * s= 行由 config->session_name 决定：Play(实时点播)/Playback(回放)/Download(下载)。
+     * Download 时额外加 a=downloadspeed。
      */
+    const char *codec;
+    const char *session;
+    const char *dl = "";
+
     if (!config || !buf || buf_size <= 0 || !ssrc) {
         return -1;
     }
+    codec = config->codec[0] ? config->codec : "H264";
+    session = config->session_name[0] ? config->session_name : "Play";
+    if (strcmp(session, "Download") == 0) {
+        dl = "a=downloadspeed:1\r\n";  /* 下载倍速，学习用固定 1 */
+    }
+
     if (config->use_tcp) {
         /* TCP 承载：m= 用 TCP/RTP/AVP，setup:active 表示设备主动连平台，
          * connection:new 表示新建 TCP 连接（GB28181 TCP 被动收流常见写法）。 */
         return snprintf(buf, buf_size,
             "v=0\r\n"
             "o=%s 0 0 IN IP4 %s\r\n"
-            "s=Play\r\n"
+            "s=%s\r\n"
             "c=IN IP4 %s\r\n"
             "t=0 0\r\n"
             "m=video %d TCP/RTP/AVP %d\r\n"
             "a=sendonly\r\n"
             "a=setup:active\r\n"
             "a=connection:new\r\n"
-            "a=rtpmap:%d H264/90000\r\n"
+            "a=rtpmap:%d %s/90000\r\n"
+            "%s"
             "a=ssrc:%s\r\n",
             config->local_id,
             cfg_local_ip(config),
+            session,
             cfg_local_ip(config),
             cfg_local_rtp_port(config),
             config->payload_type,
             config->payload_type,
+            codec,
+            dl,
             ssrc);
     }
     return snprintf(buf, buf_size,
         "v=0\r\n"
         "o=%s 0 0 IN IP4 %s\r\n"
-        "s=Play\r\n"
+        "s=%s\r\n"
         "c=IN IP4 %s\r\n"
         "t=0 0\r\n"
         "m=video %d RTP/AVP %d\r\n"
         "a=sendonly\r\n"
-        "a=rtpmap:%d H264/90000\r\n"
+        "a=rtpmap:%d %s/90000\r\n"
+        "%s"
         "a=ssrc:%s\r\n",
         config->local_id,
         cfg_local_ip(config),
+        session,
         cfg_local_ip(config),
         cfg_local_rtp_port(config),
         config->payload_type,
         config->payload_type,
+        codec,
+        dl,
         ssrc);
 }
 

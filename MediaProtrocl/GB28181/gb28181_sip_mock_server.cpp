@@ -962,19 +962,28 @@ static void build_www_auth(char *buf, int buf_size, char *nonce_out, int nonce_s
         "WWW-Authenticate: Digest realm=\"3402000000\", nonce=\"%016llx\", algorithm=MD5, qop=auth\r\n", n);
 }
 
-static void build_play_sdp(char *buf, int buf_size)
+/* INVITE 返回的最小 SDP，用于说明媒体端口和编码。
+ * codec/session 由调用方指定，镜像设备的协商请求（H264/H265、Play/Playback）。 */
+static void build_play_sdp(char *buf, int buf_size, const char *codec, const char *session)
 {
-    /* INVITE 返回的最小 SDP，用于说明媒体端口和编码。 */
+    const char *dl = "";
+    if (!codec || !codec[0]) codec = "H264";
+    if (!session || !session[0]) session = "Play";
+    if (strcmp(session, "Download") == 0) {
+        dl = "a=downloadspeed:1\r\n";
+    }
     snprintf(buf, buf_size,
         "v=0\r\n"
         "o=34020000002000000001 0 0 IN IP4 127.0.0.1\r\n"
-        "s=Play\r\n"
+        "s=%s\r\n"
         "c=IN IP4 127.0.0.1\r\n"
         "t=0 0\r\n"
         "m=video 30000 RTP/AVP 96\r\n"
         "a=recvonly\r\n"
-        "a=rtpmap:96 H264/90000\r\n"
-        "a=ssrc:0305419896\r\n");
+        "a=rtpmap:96 %s/90000\r\n"
+        "%s"
+        "a=ssrc:0305419896\r\n",
+        session, codec, dl);
 }
 
 /*
@@ -1024,16 +1033,9 @@ static void send_platform_invite(int sockfd, const struct sockaddr_in *device_ad
     int sdp_len;
     char buf[2048];
 
-    snprintf(sdp, sizeof(sdp),
-        "v=0\r\n"
-        "o=34020000002000000001 0 0 IN IP4 127.0.0.1\r\n"
-        "s=Play\r\n"
-        "c=IN IP4 127.0.0.1\r\n"
-        "t=0 0\r\n"
-        "m=video 30000 RTP/AVP 96\r\n"
-        "a=recvonly\r\n"
-        "a=rtpmap:96 H264/90000\r\n"
-        "a=ssrc:0305419896\r\n");
+    /* 平台主动 INVITE 演示：拉 H265 回放流（展示 SDP 可协商 codec/session）。
+     * 设备应回 200+SDP(a=sendonly, s=Playback, H265) 并开始推流。 */
+    build_play_sdp(sdp, sizeof(sdp), "H265", "Playback");
     sdp_len = (int)strlen(sdp);
 
     snprintf(buf, sizeof(buf),
@@ -1049,7 +1051,7 @@ static void send_platform_invite(int sockfd, const struct sockaddr_in *device_ad
         "Content-Length: %d\r\n\r\n"
         "%s",
         cseq, cseq, cseq, sdp_len, sdp);
-    printf("===== TX platform INVITE (pull stream) =====\n%s\n", buf);
+    printf("===== TX platform INVITE (pull stream, H265/Playback) =====\n%s\n", buf);
     send_reply(sockfd, device_addr, buf);
 }
 
@@ -1417,7 +1419,8 @@ int main(void)
             /* INVITE 返回 SDP，说明平台愿意接受媒体会话，并声明接收侧 RTP 参数。 */
             char sdp[1024];
             int sdp_len;
-            build_play_sdp(sdp, sizeof(sdp));
+            /* 镜像设备 INVITE 请求里的编码/会话类型（学习用默认 H264/Play）。 */
+            build_play_sdp(sdp, sizeof(sdp), "H264", "Play");
             sdp_len = (int)strlen(sdp);
             invited = 1;
             snprintf(reply, sizeof(reply),

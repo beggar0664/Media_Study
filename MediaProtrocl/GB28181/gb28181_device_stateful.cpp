@@ -1374,6 +1374,14 @@ int main(int argc, char **argv)
     if (argc > 3 && argv[3] && strcmp(argv[3], "tcp") == 0) {
         use_tcp = 1;  /* 第三参数 tcp 启用 RTP over TCP 承载 */
     }
+    const char *codec = NULL;        /* 第四参数 codec：H264 / H265 */
+    const char *session = NULL;      /* 第五参数 session：Play / Playback / Download */
+    if (argc > 4 && argv[4]) {
+        codec = argv[4];
+    }
+    if (argc > 5 && argv[5]) {
+        session = argv[5];
+    }
 
     if (init_winsock() != 0) {
         printf("WSAStartup failed\n");
@@ -1401,6 +1409,12 @@ int main(int argc, char **argv)
     ctx.cfg.ssrc = 0x12345678;
     ctx.ssrc = 0x12345678;
     ctx.cfg.use_tcp = use_tcp;
+    if (codec) {
+        snprintf(ctx.cfg.codec, sizeof(ctx.cfg.codec), "%s", codec);
+    }
+    if (session) {
+        snprintf(ctx.cfg.session_name, sizeof(ctx.cfg.session_name), "%s", session);
+    }
     if (media_file) {
         snprintf(ctx.media_file, sizeof(ctx.media_file), "%s", media_file);
     }
@@ -1415,12 +1429,13 @@ int main(int argc, char **argv)
 #endif
 
     printf("===== GB28181 stateful device starting =====\n");
-    printf("local=%s:%d server=%s:%d target=%s cycles=%d media=%s transport=%s\n",
+    printf("local=%s:%d server=%s:%d target=%s cycles=%d media=%s transport=%s codec=%s session=%s\n",
            ctx.cfg.local_ip, ctx.cfg.local_sip_port,
            ctx.cfg.sip_server_ip, ctx.cfg.sip_server_port,
            ctx.invite_target, ctx.invite_cycles_max,
            ctx.media_file[0] ? ctx.media_file : "<builtin>",
-           ctx.cfg.use_tcp ? "TCP" : "UDP");
+           ctx.cfg.use_tcp ? "TCP" : "UDP",
+           ctx.cfg.codec, ctx.cfg.session_name);
     printf("Ctrl+C to stop\n");
 
     /* 首次启动：直接进入注册（无退避）。 */
