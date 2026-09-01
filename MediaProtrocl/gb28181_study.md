@@ -1631,6 +1631,44 @@ FU-A reassembled NALU: len=256 header=0x65 timestamp=2532218597 ssrc=0x12345678 
 
 这说明接收端已经把一组 FU-A 分片还原回原始裸 NALU：首字节恢复成 `0x65`，长度恢复成 `256`。这里仍然没有解码图像，只是完成了 H.264 RTP 负载层的重组验证。
 
+#### FU-A 理解 NALU 到哪一层
+
+一个常见疑问：FU-A 分包"只理解 NALU 结构"——那它到底理解多少？
+
+**精确答案：只理解 NALU 头（第 0 字节），不理解 NALU 内部负载。** 这是"半语义"分片：
+
+| 层 | FU-A 理解吗 | 例子 |
+|---|---|---|
+| NALU 头（第0字节） | **理解**：forbidden/NRI/type | 提取 type、保留 NRI、type 换 28 |
+| NALU 负载（第1字节起） | **不理解**，当不透明字节原样搬 | slice header / SPS 字段 / RBSP 全不解析 |
+
+代码体现（`gb28181_module.cpp` 1696-1730 行）：
+```c
+nalu_header = nalu[0];                    // 只看第 0 字节
+nalu_type   = (nalu_header & 0x1F);       // 提取 type
+fu_indicator = (nalu_header & 0xE0) | 28; // NRI 保留，type 改 28
+offset = 1;                                // 从第 1 字节起，原样搬
+memcpy(packet + 2, nalu + offset, chunk); // 不看内容，当字节流
+```
+
+FU-A 不解析、也不需要解析的东西：
+- slice header（first_mb_in_slice / slice_type / frame_num 等）
+- SPS/PPS 的参数字段（profile_id / level_id / 分辨率等）
+- IDR/I/P/B 的内部结构（只知道 type=5 是 IDR，不知 IDR 内部）
+
+**为什么只到 NALU 头就够**：FU-A 分片要做的只有两件事——把原 NALU 头的 type 换成 28、每片加 FU header 告诉接收端"这是第几片、原 type 是什么"。这两件只需要 NALU 头信息。NALU 内部负载原样切成片搬过去，接收端拼回完整 NALU 再恢复头，就交给解码器。这是 RFC 6184（FU-A）的边界：FU-A 只管把大 NALU 切小并加协议头，不该关心 NALU 里是什么编码数据。
+
+**对照三层"理解"**（与上面 10.2 节通用字节分包呼应）：
+
+| 函数 | 理解到哪层 | 改写吗 |
+|---|---|---|
+| `send_rtp_packet` | 不理解 payload | 不改 |
+| `send_rtp_payload_fragmented` | 不理解，只按大小切 | 不改 |
+| `send_h264_fu_a` | 理解 NALU 头（type/NRI） | 改：type 换 28，加 FU header |
+| （当前没有的）真·编码层分片 | 理解 slice/RBSP | 能按 slice 边界切 |
+
+**NALU 内部什么时候才需要理解**：只有接收端**解码**才需要——拼回 NALU 后看 slice header 判帧类型、解析 SPS/PPS 参数。当前 mock 接收端只重组到完整 NALU 落盘 `gb28181_rx.h264`，不解码；真正理解 NALU 内部的是 `ffplay`/`ffmpeg`。所以发送端 FU-A 和接收端重组都停在"NALU 头"这层，内部负载两端都不碰。
+
 ### 10.3.1 H.265 FU 分片与重组（RFC 7798）
 
 H.265 的 RTP FU 分片和 H.264 FU-A 结构相似但头布局不同，是学习 H.265 over RTP 的重点：
