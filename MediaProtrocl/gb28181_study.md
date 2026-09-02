@@ -1476,6 +1476,37 @@ seq=31730 timestamp=1142747095 marker=1 payload_len=69
 
 抓包学习时可以直接看 RTP payload 开头：如果是 `65`，说明 payload 是 H.264 IDR NALU；如果是 `00 00 01 BA`，说明 payload 是 PS pack。
 
+#### PS 分片和 RTP 分片冲突吗
+
+常见疑问：PS 封装本身标准上也能分片（一个大帧可以切成多个 PS pack），那它和 RTP 分片会不会冲突？
+
+**不冲突，层次不同。** 它们切的对象不同：
+
+```
+原始视频帧（一个访问单元）
+    │  PS 封装层（可选分片）
+    ↓
+  PS pack #1  PS pack #2  PS pack #3   ← PS 层把大帧切成多个 pack（切 ES/PES 流）
+    │           │           │
+    │  RTP 分片层（通用字节切片）
+    ↓
+  RTP 包（每个 PS pack 可能再切成多个 RTP）  ← RTP 切的是已封装的 PS 字节流
+```
+
+- PS 分片：把一个**视频帧**切成多个 PS pack（切的是 ES/PES 流）
+- RTP 分片：把一个 **PS pack** 切成多个 RTP 包（切的是已封装的 PS 字节流）
+
+两层切的东西不同，不重叠。接收端是**串行处理**，不是并行：
+
+1. **先 RTP 重组**：按 seq + marker 把多个 RTP 包拼回完整 PS pack（字节级拼接，不理解 PS 结构）
+2. **再 PS 解析**：拿到完整 PS pack 后，才按 PS 协议找 `00 00 01 BA`、`00 00 01 E0`、PTS、NALU
+
+所以 RTP 切的时候不碰 PS 结构，PS 解析时 RTP 已拼好，两层各管各的边界。
+
+**"边界对不上会乱吗"**：不会。即使 RTP 切片恰好把 PS pack 的 `00 00 01 BA` 头切到两个 RTP 包里，拼回完整 PS pack 后头是完整的，PS 解析在拼回的字节流里找起始码，不存在"头被切两半"。mock 接收端 `print_ps_payload_summary` 就是在拼回的 payload 里找 `00 00 01 BA`，不是在每个 RTP 包里找。
+
+**当前代码的简化**：`build_ps_pack_h264` 一次性把整帧 NALU 封进一个 PS pack（不在 PS 层分片），所以只在 RTP 层切（`send_rtp_payload_fragmented`），连"两层都切"的场景都没有。真实工程若 PS 分片，marker 标记的是"一个 PS pack 传完"而非"一帧传完"，当前一个 pack 一帧时两者重合。
+
 #### 通用字节分包 vs 语义分包
 
 GB28181 媒体层有两种 RTP 分包方式，对应两种承载，这是最易混的点：
