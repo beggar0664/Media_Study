@@ -793,6 +793,66 @@ static void print_rtp_packet_summary(const unsigned char *data, int size)
 }
 
 /*
+ * RTCP 统计累计上下文（持续上报用）。
+ * 收到 RR 累计丢包/抖动，收到 SR 记 NTP 中位（算 RTT 用），
+ * 周期打印汇总 [RTCP stats] rr=N total_lost=X avg_jitter=Y rtt=Zms。
+ */
+typedef struct {
+    unsigned int rr_count;            /* 收到的 RR 报告数 */
+    long total_lost;                  /* 累计丢包数（带符号） */
+    unsigned long long jitter_sum;    /* 抖动累加（算平均） */
+    unsigned int last_lsr;            /* 上次 SR 的 NTP 中位（RR 的 LSR 来源） */
+    unsigned long long last_sr_recv_ms; /* 收到上一个 SR 的墙钟 */
+    unsigned long long next_report_ms;  /* 下次打印汇总的墙钟 */
+    int have_last_sr;                 /* 是否已收到过 SR */
+    /* SR sender info：发送端累计统计（mock 作为接收端，可据此算丢包率）。 */
+    unsigned int sr_packets;          /* 发送端报的 RTP 包总数 */
+    unsigned int sr_octets;           /* 发送端报的字节总数 */
+    unsigned int sr_count;            /* 收到的 SR 报告数 */
+    unsigned long long rtp_rx_count;  /* mock 实际收到的 RTP 包数 */
+} rtcp_stats_t;
+
+static rtcp_stats_t g_rtcp_stats;
+
+static void rtcp_stats_reset(rtcp_stats_t *s)
+{
+    if (!s) return;
+    s->rr_count = 0;
+    s->total_lost = 0;
+    s->jitter_sum = 0;
+    s->last_lsr = 0;
+    s->last_sr_recv_ms = 0;
+    s->have_last_sr = 0;
+    s->sr_packets = 0;
+    s->sr_octets = 0;
+    s->sr_count = 0;
+    s->rtp_rx_count = 0;
+    s->next_report_ms = fu_a_now_ms() + 1000;  /* 1 秒后第一次汇总 */
+}
+
+static void rtcp_stats_print(const rtcp_stats_t *s)
+{
+    /* mock 是接收端，最直接的统计是自己收到的 RTP 包数。
+     * 如果发送端发过 SR，对比 SR 报的 packets 和实际 rx，差值即丢包。 */
+    printf("[RTCP stats] rtp_rx=%u", (unsigned)s->rtp_rx_count);
+    if (s->sr_count > 0) {
+        long lost = (long)s->sr_packets - (long)s->rtp_rx_count;
+        if (lost < 0) lost = 0;
+        printf(" sr=%u sr_packets=%u lost=%ld sr_octets=%u",
+               s->sr_count, s->sr_packets, lost, s->sr_octets);
+    }
+    if (s->rr_count > 0) {
+        unsigned long long avg_jitter = s->jitter_sum / s->rr_count;
+        printf(" rr=%u rr_total_lost=%ld rr_avg_jitter=%llu",
+               s->rr_count, s->total_lost, avg_jitter);
+    }
+    if (s->have_last_sr) {
+        printf(" last_lsr=0x%08X", s->last_lsr);
+    }
+    printf("\n");
+}
+
+/*
  * RTCP 报文最小解析。
  *
  * 和 RTP 一样只做学习式拆头，不做完整 RTCP 协议栈。RTCP 固定头 4 字节：
@@ -864,6 +924,15 @@ static void print_rtcp_packet_summary(const unsigned char *data, int size)
                                     ((unsigned int)p[26] << 8) | p[27];
             printf("    SR sender: ssrc=0x%08X ntp_sec=%llu ntp_frac=%llu rtp_ts=%u packets=%u octets=%u\n",
                    ssrc, ntp_sec, ntp_frac, rtp_ts, pkt_count, oct_count);
+            /* SR 的 NTP 中位(LSR):ntp_sec 低16 位 << 16 | ntp_frac 高16 位。
+             * RR 里 LSR 字段回填这个值,用于 RTT 计算。 */
+            g_rtcp_stats.last_lsr = (unsigned int)(((ntp_sec & 0xFFFF) << 16) | ((ntp_frac >> 16) & 0xFFFF));
+            g_rtcp_stats.last_sr_recv_ms = fu_a_now_ms();
+            g_rtcp_stats.have_last_sr = 1;
+            /* SR sender info:发送端累计包数/字节数,mock 据此算丢包率。 */
+            g_rtcp_stats.sr_packets = pkt_count;
+            g_rtcp_stats.sr_octets = oct_count;
+            g_rtcp_stats.sr_count++;
         }
 
         /* RR report block（头 4 + SSRC 4 之后，每 block 24 字节）。rc_sc 是 block 数。 */
@@ -879,8 +948,29 @@ static void print_rtcp_packet_summary(const unsigned char *data, int size)
                     lost |= ~0x00FFFFFF;  /* 24 位有符号扩展 */
                 }
                 unsigned int jitter = ((unsigned int)b[4] << 8) | b[5];
-                printf("    RR block 0: fraction_lost=%u/256 packets_lost=%d jitter=%u\n",
-                       fraction, lost, jitter);
+                /* LSR(上次 SR 的 NTP 中位)在 b[8..11],DLSR 在 b[12..15]。
+                 * RTT = (收到 RR 的墙钟 - 收到 SR 的墙钟) - DLSR。
+                 * DLSR 单位是 1/65536 秒,换算成 ms。 */
+                unsigned int lsr = ((unsigned int)b[8] << 24) | ((unsigned int)b[9] << 16) |
+                                   ((unsigned int)b[10] << 8) | b[11];
+                unsigned int dlsr = ((unsigned int)b[12] << 24) | ((unsigned int)b[13] << 16) |
+                                    ((unsigned int)b[14] << 8) | b[15];
+                printf("    RR block 0: fraction_lost=%u/256 packets_lost=%d jitter=%u lsr=0x%08X dlsr=%u\n",
+                       fraction, lost, jitter, lsr, dlsr);
+                /* 累计统计。 */
+                g_rtcp_stats.rr_count++;
+                g_rtcp_stats.total_lost += lost;
+                g_rtcp_stats.jitter_sum += jitter;
+                /* RTT 计算(RFC 3550):RTT = now_since_SR - DLSR。
+                 * DLSR 单位 1/65536 秒,换算 ms = dlsr * 1000 / 65536。 */
+                if (g_rtcp_stats.have_last_sr && lsr == g_rtcp_stats.last_lsr && dlsr > 0) {
+                    unsigned long long now = fu_a_now_ms();
+                    unsigned long long dlsr_ms = (unsigned long long)dlsr * 1000ULL / 65536ULL;
+                    long long rtt = (long long)(now - g_rtcp_stats.last_sr_recv_ms) - (long long)dlsr_ms;
+                    if (rtt < 0) rtt = 0;
+                    printf("    RTT: %lld ms (now-SR=%llu dlsr_ms=%llu)\n",
+                           rtt, now - g_rtcp_stats.last_sr_recv_ms, dlsr_ms);
+                }
             }
         }
 
@@ -1214,12 +1304,15 @@ int main(void)
     printf("GB28181 RTP mock receiver listening on udp/30000\n");
     printf("GB28181 RTCP mock receiver listening on udp/30001\n");
 
+    rtcp_stats_reset(&g_rtcp_stats);  /* 初始化统计 + 首次汇总时间 */
+
     for (;;) {
         fd_set readfds;
         int maxfd;
         int ret;
         gb28181_sip_message_t msg;
         char from_ip[64];
+        struct timeval tv;
 
         FD_ZERO(&readfds);
         FD_SET(sockfd, &readfds);
@@ -1228,8 +1321,22 @@ int main(void)
         maxfd = sockfd;
         if (rtp_sockfd > maxfd) maxfd = rtp_sockfd;
         if (rtcp_sockfd > maxfd) maxfd = rtcp_sockfd;
-        ret = select(maxfd + 1, &readfds, NULL, NULL, NULL);
-        if (ret <= 0) {
+        /* 1s 超时：周期检查 RTCP 统计上报（原来是 NULL 无限等待）。 */
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        ret = select(maxfd + 1, &readfds, NULL, NULL, &tv);
+        if (ret < 0) {
+            continue;
+        }
+        if (ret == 0) {
+            /* select 超时：检查 RTCP 统计是否到点上报。 */
+            unsigned long long now = fu_a_now_ms();
+            if (g_rtcp_stats.next_report_ms && now >= g_rtcp_stats.next_report_ms) {
+                if (g_rtcp_stats.rtp_rx_count > 0 || g_rtcp_stats.rr_count > 0 || g_rtcp_stats.have_last_sr) {
+                    rtcp_stats_print(&g_rtcp_stats);
+                }
+                g_rtcp_stats.next_report_ms = now + 1000;  /* 下一秒再报 */
+            }
             continue;
         }
 
@@ -1246,6 +1353,7 @@ int main(void)
             ret = recvfrom(rtp_sockfd, (char *)rtp_buf, sizeof(rtp_buf), 0, (struct sockaddr *)&rtp_peer, &rtp_peer_len);
             if (ret > 0) {
                 print_rtp_packet_summary(rtp_buf, ret);
+                g_rtcp_stats.rtp_rx_count++;  /* 累计实际收到包数,算丢包率用 */
             }
             continue;
         }
