@@ -1507,6 +1507,35 @@ seq=31730 timestamp=1142747095 marker=1 payload_len=69
 
 **当前代码的简化**：`build_ps_pack_h264` 一次性把整帧 NALU 封进一个 PS pack（不在 PS 层分片），所以只在 RTP 层切（`send_rtp_payload_fragmented`），连"两层都切"的场景都没有。真实工程若 PS 分片，marker 标记的是"一个 PS pack 传完"而非"一帧传完"，当前一个 pack 一帧时两者重合。
 
+#### 三层切片的完整层次（含 PS 层可选）
+
+把前面两个辨析（通用 vs 语义、PS 分片 vs RTP 分片）串起来，GB28181 媒体切片标准上有**三层可能**，当前代码用其中两层：
+
+```
+NALU 层      语义切片（send_h264_fu_a / send_h265_fu）     ← 切裸 NALU，理解 NALU 头
+  ↑ 不走 PS 时用（裸 H.264/H.265 over RTP）
+  ↓ 走 PS 时用
+PS 封装层    PS 分片（标准允许，当前代码不做）            ← 切帧→多 pack
+  ↓
+RTP 分片层   通用字节切片（send_rtp_payload_fragmented）  ← 切 pack→多 RTP，不理解内容
+```
+
+| 层 | 切的对象 | 理解结构吗 | 当前代码 |
+|---|---|---|---|
+| NALU 层（语义切片） | 裸 NALU | 理解 NALU 头 | 有（`send_h264_fu_a`/`send_h265_fu`） |
+| PS 封装层（PS 分片） | 一帧 → 多个 PS pack | 理解 PS/PES 结构 | **无**（`build_ps_pack_h264` 一帧一 pack） |
+| RTP 分片层（通用切片） | 一个 PS pack → 多 RTP | 不理解 | 有（`send_rtp_payload_fragmented`） |
+
+**为什么 PS 层不分片**：RTP 层通用切片已经能把大 PS pack 切小，PS 层再切是冗余的。GB28181 监控帧通常不大（几百到几千字节），RTP 切一两片够用，PS 层分片收益不大且增加接收端复杂度（两层重组、marker 语义分离）。标准允许但实际少用。
+
+**什么情况才需要 PS 层分片**：超大帧（4K 关键帧几十 KB）、想限制单 pack 尺寸便于缓存重传、做更细粒度错误恢复（丢一个 pack 只丢一段不是整帧）。这是工程优化，不是 GB28181 必需。
+
+**两条承载链路的切片对应**：
+- PS over RTP：NALU → PS 封装（不分片）→ RTP 通用切片。只用 RTP 层。
+- 裸 H.264 over RTP：NALU → 语义切片。只用 NALU 层，不走 PS。
+
+当前代码这两条链路都只走一层切片（要么 RTP 层、要么 NALU 层），PS 层分片是"标准允许但当前不用"的第三层。
+
 #### 通用字节分包 vs 语义分包
 
 GB28181 媒体层有两种 RTP 分包方式，对应两种承载，这是最易混的点：
