@@ -529,6 +529,30 @@ media demo: send PS over RTP ret=69 marker=1 timestamp_inc=9000
 
 与此同时，mock server 现在也会监听 `udp/30000`，收到 RTP 后会打印最小头部摘要：`version / pt / marker / seq / timestamp / ssrc / payload head`。这样你能直接把发送端和接收端对照起来，不必只依赖 Wireshark。
 
+#### 通道数和通道 ID 怎么通信
+
+常见疑问：平台点播时要指定通道 ID，那平台和设备要不要事先互相知道通道数和 ID？
+
+**必须知道通道 ID，但靠 Catalog 协议动态获取，不是硬编码。** 这是 Catalog 命令的核心作用：
+
+| 信息 | 谁需要 | 怎么知道 |
+|---|---|---|
+| 通道数（SumNum） | 平台 | Catalog Query→Response 动态获取 |
+| 每路通道 ID | 平台 | Catalog Response 的 `<Item><DeviceID>` |
+| 通道在线状态 | 平台 | Catalog Response 的 `<Status>` + 设备 Notify |
+| 设备自己的通道 | 设备 | 本地配置（设备知道自己有哪些通道） |
+| 平台的通道 | 设备 | 一般不需要（设备不主动查平台） |
+
+平台拿到 Catalog Response 后才知道"这个设备有 N 路、每路 ID 是 XXX"，据此选一个通道发 INVITE。这个"知道"是运行时通信获取的，不是事先约定硬编码。
+
+**ID 格式约定 vs 通道信息通信**（两层，别混）：
+- ID 格式是国标约定（20 位编号，前 8 位行政区域+行业、9-13 位网络标识、14-20 位序号），双方默认懂。比如 `34020000001320000001`：340200(安徽芜湖) + 000000(网络) + 132(视频设备) + 0000001(序号)。
+- 但"这个设备具体有几路、每路什么 ID、哪路在线"靠 Catalog 协议获取，不能从 ID 格式推出来。
+
+**级联例外**：下级平台作为"虚拟设备"注册到上级时，上级也会对它发 Catalog Query，下级平台把自己下面所有设备的通道当 Item 返回（目录共享）。这时"下级平台"扮演设备角色回通道列表。
+
+当前代码 `gb28181_build_message_catalog_response` 已改成接受 `gb28181_catalog_response_t*` 参数（通道列表由调用方填充，不再写死）：设备填自己的通道（stateful 回 1 条 invite_target），mock 填 2 条学习用通道。真实设备应动态返回实际通道列表。
+
 ### 3.4 DeviceInfo 与 DeviceStatus
 
 在 GB28181 里，除了目录查询，常见的两个查询消息还有 `DeviceInfo` 和 `DeviceStatus`。它们和 Catalog 一样，都是通过 SIP `MESSAGE` 承载 XML body。区别只是业务语义不同：

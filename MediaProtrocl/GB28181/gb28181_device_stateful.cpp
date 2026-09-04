@@ -1014,8 +1014,17 @@ static void handle_incoming(gb_device_ctx_t *ctx, const char *msg_text, int msg_
             if (is_query && strcmp(cmd_type, "Catalog") == 0) {
                 char resp[4096];
                 int resp_len;
+                /* 设备回自己的通道列表（设备知道自己有哪些通道）。
+                 * 学习用固定 1 条在线通道，真实设备应动态返回实际通道。 */
+                gb28181_catalog_response_t ch;
+                memset(&ch, 0, sizeof(ch));
+                ch.sum_num = 1;
+                ch.device_list_num = 1;
+                snprintf(ch.items[0].device_id, sizeof(ch.items[0].device_id), "%s", ctx->invite_target);
+                snprintf(ch.items[0].name, sizeof(ch.items[0].name), "%s", "Camera-stateful");
+                snprintf(ch.items[0].status, sizeof(ch.items[0].status), "%s", "ON");
                 resp_len = gb28181_build_message_catalog_response(&ctx->cfg, (int)ctx->cseq + 50,
-                                                                    resp, (int)sizeof(resp));
+                                                                    &ch, resp, (int)sizeof(resp));
                 if (resp_len > 0) {
                     printf("[rx] platform Catalog Query, send Response\n");
                     send_sip(ctx->sip_sock, &ctx->remote_addr, resp);

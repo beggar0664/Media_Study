@@ -584,67 +584,73 @@ int gb28181_build_message_device_status_query(const gb28181_config_t *config, in
     return build_xml_message(config, "DeviceStatus", cseq, cseq, buf, buf_size);
 }
 
-int gb28181_build_message_catalog_response(const gb28181_config_t *config, int cseq, char *buf, int buf_size)
+int gb28181_build_message_catalog_response(const gb28181_config_t *config,
+                                            int cseq,
+                                            const gb28181_catalog_response_t *channel_list,
+                                            char *buf,
+                                            int buf_size)
 {
-    char body[2048];
+    char body[4096];
     int body_len;
+    int i;
+    int offset = 0;
+    int n;
 
-    /* 最小目录响应：返回固定的通道列表，便于学习查询/响应闭环。 */
-    if (!config || !buf || buf_size <= 0) {
+    /* 设备把 channel_list 里的通道（Item）回给平台。
+     * channel_list 由调用方填充——设备知道自己有哪些通道，不再写死。
+     * 平台拿到 SumNum + DeviceList 后就知道通道数和 ID，据此点播。 */
+    if (!config || !buf || buf_size <= 0 || !channel_list) {
         return -1;
     }
 
-    /*
-     * 这里返回的是“学习用固定目录”，不是动态设备树。
-     * 先保留两条通道：一条在线、一条离线，方便后续在 client 里练习
-     * Catalog 解析、在线通道筛选和 INVITE 目标选择。
-     */
-    body_len = snprintf(body, sizeof(body),
+    /* 生成 XML body：先写头，再循环写每个 Item，最后收尾。 */
+    n = snprintf(body + offset, sizeof(body) - offset,
         "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
         "<Response>\r\n"
         "<CmdType>Catalog</CmdType>\r\n"
         "<SN>%d</SN>\r\n"
         "<DeviceID>%s</DeviceID>\r\n"
-        "<SumNum>2</SumNum>\r\n"
-        "<DeviceList Num=\"2\">\r\n"
-        "<Item>\r\n"
-        "<DeviceID>34020000001320000001</DeviceID>\r\n"
-        "<Name>Camera-01</Name>\r\n"
-        "<Manufacturer>MockVendor</Manufacturer>\r\n"
-        "<Model>IPC-MOCK-01</Model>\r\n"
-        "<Owner>3402000000</Owner>\r\n"
-        "<CivilCode>340200</CivilCode>\r\n"
-        "<Address>Mock Address</Address>\r\n"
-        "<Parental>0</Parental>\r\n"
-        "<ParentID>34020000002000000001</ParentID>\r\n"
-        "<SafetyWay>0</SafetyWay>\r\n"
-        "<RegisterWay>1</RegisterWay>\r\n"
-        "<Secrecy>0</Secrecy>\r\n"
-        "<Status>ON</Status>\r\n"
-        "</Item>\r\n"
-        "<Item>\r\n"
-        "<DeviceID>34020000001320000002</DeviceID>\r\n"
-        "<Name>Camera-02</Name>\r\n"
-        "<Manufacturer>MockVendor</Manufacturer>\r\n"
-        "<Model>IPC-MOCK-02</Model>\r\n"
-        "<Owner>3402000000</Owner>\r\n"
-        "<CivilCode>340200</CivilCode>\r\n"
-        "<Address>Mock Address 2</Address>\r\n"
-        "<Parental>0</Parental>\r\n"
-        "<ParentID>34020000002000000001</ParentID>\r\n"
-        "<SafetyWay>0</SafetyWay>\r\n"
-        "<RegisterWay>1</RegisterWay>\r\n"
-        "<Secrecy>0</Secrecy>\r\n"
-        "<Status>OFF</Status>\r\n"
-        "</Item>\r\n"
-        "</DeviceList>\r\n"
-        "</Response>\r\n",
+        "<SumNum>%d</SumNum>\r\n"
+        "<DeviceList Num=\"%d\">\r\n",
         cseq,
-        config->local_id);
-
-    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        config->local_id,
+        channel_list->sum_num > 0 ? channel_list->sum_num : channel_list->device_list_num,
+        channel_list->device_list_num);
+    if (n < 0 || n >= (int)(sizeof(body) - offset)) {
         return -2;
     }
+    offset += n;
+
+    /* 遍历每个 Item，动态生成。只填非空字段，避免输出空标签。 */
+    for (i = 0; i < channel_list->device_list_num && i < (int)(sizeof(channel_list->items) / sizeof(channel_list->items[0])); ++i) {
+        const gb28181_catalog_item_t *it = &channel_list->items[i];
+        n = snprintf(body + offset, sizeof(body) - offset,
+            "<Item>\r\n"
+            "<DeviceID>%s</DeviceID>\r\n"
+            "%s%s%s"   /* Name 占位 */
+            "%s%s%s"   /* Manufacturer 占位 */
+            "%s%s%s"   /* Model 占位 */
+            "%s%s%s"   /* ParentID 占位 */
+            "%s%s%s"   /* Status 占位 */
+            "</Item>\r\n",
+            it->device_id[0] ? it->device_id : "<none>",
+            it->name[0] ? "<Name>" : "", it->name[0] ? it->name : "", it->name[0] ? "</Name>\r\n" : "",
+            it->manufacturer[0] ? "<Manufacturer>" : "", it->manufacturer[0] ? it->manufacturer : "", it->manufacturer[0] ? "</Manufacturer>\r\n" : "",
+            it->model[0] ? "<Model>" : "", it->model[0] ? it->model : "", it->model[0] ? "</Model>\r\n" : "",
+            it->parent_id[0] ? "<ParentID>" : "", it->parent_id[0] ? it->parent_id : "", it->parent_id[0] ? "</ParentID>\r\n" : "",
+            it->status[0] ? "<Status>" : "", it->status[0] ? it->status : "", it->status[0] ? "</Status>\r\n" : "");
+        if (n < 0 || n >= (int)(sizeof(body) - offset)) {
+            return -3;
+        }
+        offset += n;
+    }
+
+    n = snprintf(body + offset, sizeof(body) - offset, "</DeviceList>\r\n</Response>\r\n");
+    if (n < 0 || n >= (int)(sizeof(body) - offset)) {
+        return -4;
+    }
+    offset += n;
+    body_len = offset;
 
     return snprintf(buf, buf_size,
         "MESSAGE sip:%s@%s SIP/2.0\r\n"

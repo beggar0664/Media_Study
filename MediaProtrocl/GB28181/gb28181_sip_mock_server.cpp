@@ -1211,6 +1211,7 @@ static void send_platform_record_info_query(int sockfd, const struct sockaddr_in
 static void build_catalog_response_message(char *buf, int buf_size, int cseq)
 {
     gb28181_config_t cfg;
+    gb28181_catalog_response_t ch;
     memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.local_id, sizeof(cfg.local_id), "%s", "34020000002000000001");
     snprintf(cfg.domain, sizeof(cfg.domain), "%s", "3402000000");
@@ -1219,7 +1220,25 @@ static void build_catalog_response_message(char *buf, int buf_size, int cseq)
     cfg.local_sip_port = 5060;
     snprintf(cfg.local_ip, sizeof(cfg.local_ip), "%s", "127.0.0.1");
     snprintf(cfg.stream_id, sizeof(cfg.stream_id), "%s", "34020000001320000001");
-    gb28181_build_message_catalog_response(&cfg, cseq, buf, buf_size);
+
+    /* 填充通道列表：设备知道自己有哪些通道，回给平台。
+     * 学习用固定 2 条（一在线一离线），真实设备应动态返回实际通道。 */
+    memset(&ch, 0, sizeof(ch));
+    ch.sum_num = 2;
+    ch.device_list_num = 2;
+    snprintf(ch.items[0].device_id, sizeof(ch.items[0].device_id), "%s", "34020000001320000001");
+    snprintf(ch.items[0].name, sizeof(ch.items[0].name), "%s", "Camera-01");
+    snprintf(ch.items[0].manufacturer, sizeof(ch.items[0].manufacturer), "%s", "MockVendor");
+    snprintf(ch.items[0].model, sizeof(ch.items[0].model), "%s", "IPC-MOCK-01");
+    snprintf(ch.items[0].parent_id, sizeof(ch.items[0].parent_id), "%s", "34020000002000000001");
+    snprintf(ch.items[0].status, sizeof(ch.items[0].status), "%s", "ON");
+    snprintf(ch.items[1].device_id, sizeof(ch.items[1].device_id), "%s", "34020000001320000002");
+    snprintf(ch.items[1].name, sizeof(ch.items[1].name), "%s", "Camera-02");
+    snprintf(ch.items[1].manufacturer, sizeof(ch.items[1].manufacturer), "%s", "MockVendor");
+    snprintf(ch.items[1].model, sizeof(ch.items[1].model), "%s", "IPC-MOCK-02");
+    snprintf(ch.items[1].parent_id, sizeof(ch.items[1].parent_id), "%s", "34020000002000000001");
+    snprintf(ch.items[1].status, sizeof(ch.items[1].status), "%s", "OFF");
+    gb28181_build_message_catalog_response(&cfg, cseq, &ch, buf, buf_size);
 }
 
 static void build_device_info_response_message(char *buf, int buf_size, int cseq)

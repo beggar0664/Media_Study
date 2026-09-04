@@ -109,7 +109,14 @@ int gb28181_build_bye(const gb28181_config_t *config, char *buf, int buf_size);
 /* SIP MESSAGE：用于 Keepalive / Catalog 这类 XML 控制消息。 */
 int gb28181_build_message_keepalive(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 int gb28181_build_message_catalog(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
-int gb28181_build_message_catalog_response(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
+/* Catalog 响应：设备把自己有哪些通道（Item 列表）回给平台。
+ * channel_list 由调用方填充（设备知道自己有哪些通道），不再写死。
+ * 平台拿到 SumNum + DeviceList 后就知道通道数和 ID，据此点播。 */
+int gb28181_build_message_catalog_response(const gb28181_config_t *config,
+                                            int cseq,
+                                            const gb28181_catalog_response_t *channel_list,
+                                            char *buf,
+                                            int buf_size);
 /* 设备信息查询：看设备名称、厂商、型号、固件版本。 */
 int gb28181_build_message_device_info_query(const gb28181_config_t *config, int cseq, char *buf, int buf_size);
 /* 设备状态查询：看在线、编码、录像等运行状态。 */
