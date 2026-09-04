@@ -1256,6 +1256,8 @@ int main(void)
     int sockfd;
     int rtp_sockfd;
     int rtcp_sockfd;
+    int tcp_listen_sock = -1;   /* TCP listen，接受设备 TCP 承载连接 */
+    int tcp_client_sock = -1;  /* accept 得到的连接 fd */
     char recv_buf[8192];
     unsigned char rtp_buf[2048];
     unsigned char rtcp_buf[2048];
@@ -1304,6 +1306,30 @@ int main(void)
     printf("GB28181 RTP mock receiver listening on udp/30000\n");
     printf("GB28181 RTCP mock receiver listening on udp/30001\n");
 
+    /* TCP listen：接受设备 TCP 承载连接（与 UDP 30000 同端口，协议独立不冲突）。
+     * 设备作 TCP client connect 到这里，accept 后从该 fd 收 RTP。
+     * RTCP 仍走 UDP 30001。 */
+    {
+        int opt = 1;
+        struct sockaddr_in tcp_addr;
+        tcp_listen_sock = (int)socket(AF_INET, SOCK_STREAM, 0);
+        if (tcp_listen_sock >= 0) {
+            setsockopt(tcp_listen_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+            memset(&tcp_addr, 0, sizeof(tcp_addr));
+            tcp_addr.sin_family = AF_INET;
+            tcp_addr.sin_port = htons(30000);
+            tcp_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            if (bind(tcp_listen_sock, (struct sockaddr *)&tcp_addr, sizeof(tcp_addr)) == 0 &&
+                listen(tcp_listen_sock, 1) == 0) {
+                printf("GB28181 RTP TCP mock receiver listening on tcp/30000\n");
+            } else {
+                printf("GB28181 RTP TCP listen on 30000 failed (UDP-only mode)\n");
+                socket_close(tcp_listen_sock);
+                tcp_listen_sock = -1;
+            }
+        }
+    }
+
     rtcp_stats_reset(&g_rtcp_stats);  /* 初始化统计 + 首次汇总时间 */
 
     for (;;) {
@@ -1318,9 +1344,17 @@ int main(void)
         FD_SET(sockfd, &readfds);
         FD_SET(rtp_sockfd, &readfds);
         FD_SET(rtcp_sockfd, &readfds);
+        if (tcp_listen_sock >= 0) {
+            FD_SET(tcp_listen_sock, &readfds);
+        }
+        if (tcp_client_sock >= 0) {
+            FD_SET(tcp_client_sock, &readfds);
+        }
         maxfd = sockfd;
         if (rtp_sockfd > maxfd) maxfd = rtp_sockfd;
         if (rtcp_sockfd > maxfd) maxfd = rtcp_sockfd;
+        if (tcp_listen_sock > maxfd) maxfd = tcp_listen_sock;
+        if (tcp_client_sock > maxfd) maxfd = tcp_client_sock;
         /* 1s 超时：周期检查 RTCP 统计上报（原来是 NULL 无限等待）。 */
         tv.tv_sec = 1;
         tv.tv_usec = 0;
@@ -1345,6 +1379,36 @@ int main(void)
                            (struct sockaddr *)&rtcp_peer, &rtcp_peer_len);
             if (ret > 0) {
                 print_rtcp_packet_summary(rtcp_buf, ret);
+            }
+            continue;
+        }
+
+        /* TCP listen：设备 connect 到来，accept 得到连接 fd。 */
+        if (tcp_listen_sock >= 0 && FD_ISSET(tcp_listen_sock, &readfds)) {
+            struct sockaddr_in tcp_peer;
+            socklen_t tcp_peer_len = sizeof(tcp_peer);
+            if (tcp_client_sock >= 0) {
+                socket_close(tcp_client_sock);  /* 已有连接，先关旧的（学习用单连接） */
+            }
+            tcp_client_sock = (int)accept(tcp_listen_sock, (struct sockaddr *)&tcp_peer, &tcp_peer_len);
+            if (tcp_client_sock >= 0) {
+                char tcp_ip[64];
+                inet_ntop(AF_INET, &tcp_peer.sin_addr, tcp_ip, sizeof(tcp_ip));
+                printf("===== TCP RTP client connected from %s:%d =====\n", tcp_ip, ntohs(tcp_peer.sin_port));
+            }
+            continue;
+        }
+
+        /* TCP client：从已连接 fd 收 RTP，交同样的解析。 */
+        if (tcp_client_sock >= 0 && FD_ISSET(tcp_client_sock, &readfds)) {
+            ret = recv(tcp_client_sock, (char *)rtp_buf, sizeof(rtp_buf), 0);
+            if (ret > 0) {
+                print_rtp_packet_summary(rtp_buf, ret);
+                g_rtcp_stats.rtp_rx_count++;
+            } else {
+                printf("===== TCP RTP client disconnected =====\n");
+                socket_close(tcp_client_sock);
+                tcp_client_sock = -1;
             }
             continue;
         }
@@ -1587,6 +1651,8 @@ int main(void)
     }
 
     socket_close(rtcp_sockfd);
+    if (tcp_client_sock >= 0) socket_close(tcp_client_sock);
+    if (tcp_listen_sock >= 0) socket_close(tcp_listen_sock);
     socket_close(rtp_sockfd);
     socket_close(sockfd);
     cleanup_winsock();

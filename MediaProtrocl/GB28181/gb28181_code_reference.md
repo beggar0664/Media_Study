@@ -399,13 +399,14 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - **H.265 FU 分片与重组**（RFC 7798）：`gb28181_send_h265_fu` 发送分片（2字节 NALU 头、type=49 payload header、FU header S/E/FuType）；mock 端重组状态机与 H.264 共用，按 `is_h265` 分支重建 2 字节头（H.264 重建 1 字节）。已验证：mock 识别 H.265 FU，重组还原 `header=0x26 head: 26 01 ...`（对照 H.264 的 `header=0x65`）。
 - **mock 平台行为升级**（贴近真平台）：识别 `Expires:0` 注销（回 200 置未注册，不再是 501）；401 用动态 nonce（每次不同）；**平台主动下发 Catalog Query**（设备回 Response）；**平台主动 INVITE 拉流**（设备回 200+SDP，平台 ACK 后设备推流，被动收流模式）。已验证：stateful 的注销、响应平台 Query、被 INVITE 推流路径全通。
 - **DeviceControl/RecordInfo 命令**（GB/T 28181 MANSCDP）：`gb28181_build_message_device_control_ptz`（根 `<Control>` + `<PTZCmd>` 8字节，含校验和）、`_record`（`<RecordCmd>` Record/StopRecord）；`gb28181_build_message_record_info_query`（根 `<Query>` + ISO8601 起止时间 + Type）、`_response`（`<Response>` + `<SumNum>` + `<RecordList>` 固定 2 条 Item）。mock 主动下发 PTZ/RecordInfo，stateful 收到后回响应。已验证：PTZCmd=`A50F0008080000C4`（校验和正确）、RecordInfo Response 带 RecordList。
-- **RTP over TCP 承载**（设备作 TCP client 模式）：`gb28181_start` 加 TCP 分支——自建 TCP socket connect 到平台 `remote_rtp_ip:port`，把已连接 fd 交给 jrtplib `RTPTCPTransmitter`（`RTPTCPAddress(sock)`）；SDP 写 `TCP/RTP/AVP` + `a=setup:active` + `a=connection:new`。已验证：SDP 协商正确、`Create(TCP)` 不再 return -2。mock 接收端暂不支持 TCP（UDP-only），设备作 TCP server 的 listen 模式留后续。命令行第三参数 `tcp` 启用。
+- **RTP over TCP 承载**（mock 作 server + 设备作 client）：`gb28181_start` 加 TCP 分支——自建 TCP socket connect 到平台 `remote_rtp_ip:port`，把已连接 fd 交给 jrtplib `RTPTCPTransmitter`（`RTPTCPAddress(sock)`）；SDP 写 `TCP/RTP/AVP` + `a=setup:active` + `a=connection:new`。mock 端加 `tcp_listen_sock`（bind 30000 listen，与 UDP 30000 同端口协议独立不冲突）+ `accept` 收 RTP。已验证：stateful TCP connect 成功，mock accept 后收到 280 个 RTP + PS 拆层。命令行第三参数 `tcp` 启用。注：TCP 是字节流，`recv` 可能粘包（出现 `len=2` 半包），学习版未做 RTP 流重组，留后续。
 - **H.265 SDP 协商 + Playback/Download**：`gb28181_config_t` 加 `codec[16]`（H264/H265）+ `session_name[16]`（Play/Playback/Download），`gb28181_build_sdp` 读这两个字段写 `a=rtpmap:96 <codec>/90000` 和 `s=<session>`，Download 时加 `a=downloadspeed`。mock 的 `build_play_sdp` 同步带 codec/session 参数。已验证：stateful 配 `H265 Playback` 后，INVITE 的 SDP 含 `s=Playback` + `a=rtpmap:96 H265/90000`，mock 平台主动 INVITE 也能协商 H265/Playback。命令行第四参数 codec、第五参数 session。
 - **RTCP 统计持续上报**：mock 加 `rtcp_stats_t` 结构，周期累计 RTP 接收包数（`rtp_rx_count`）；收到 SR 时记 sender info（packets/octet，可对比算丢包）和 NTP 中位（LSR，算 RTT 用）；收到 RR 时累计丢包/抖动。主循环 select 改 1s 超时，每秒打印 `[RTCP stats]` 汇总。已验证：mock 周期打印 `rtp_rx=N`（有 SR 时附 sr_packets/lost/sr_octets，有 RR 时附丢包/抖动）。注：当前 mock 不发 RR 给 stateful，故 stateful 的 RR 无 block；统计以 mock 自身 RTP 接收为主。
 
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
-- TCP 接收端 + 设备作 server：当前 TCP 只做 client 模式发送，mock 不收 TCP；设备作 server 的 listen/accept 留后续
+- TCP 流重组：TCP 承载已闭环，但 `recv` 粘包未按 RTP 头 length 重组（出现半包），留后续
+- 设备作 TCP server 的 passive 模式：当前 TCP 是设备作 client、mock 作 server；设备作 server 的 listen/accept（平台主动连设备）留后续
 - 录像段索引管理：RecordInfo 已查列表，但 Playback 按时间段拉某段录像、Download 落盘保存留后续（当前回放复用 .h264 文件，不区分实时/录像）
 - 真实平台互操作：mock 已贴近真平台，下一步对接 wvp-pro 或厂商平台验证兼容性
 
