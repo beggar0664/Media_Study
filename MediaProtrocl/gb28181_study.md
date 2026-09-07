@@ -1133,6 +1133,54 @@ PS / TS / FLV / MP4 = 包裹箱子
 
 GB28181 选 SIP 而非 RTSP，因为它的需求是"设备接入平台、平台管设备、设备间级联"——这是**对等联网**问题，不是"一个媒体源等被拉流"。RTSP 处理不了设备注册、目录查询、级联，而 SIP 的"对等会话 + MESSAGE 可扩展业务"正好能装 MANSCDP 命令。
 
+### SIP INVITE 和 RTSP 哪个方法对应
+
+最自然的跨协议类比：**SIP 的 INVITE ≈ RTSP 的 SETUP + PLAY（两步合一）**。SIP 一步做完"协商参数+开始媒体会话"，RTSP 拆成两步。
+
+| 语义 | SIP (GB28181) | RTSP |
+|---|---|---|
+| 能力查询 | OPTIONS（少用） | OPTIONS（常用，问支持哪些方法） |
+| 媒体描述 | SDP 在 INVITE body | DESCRIBE 拿 SDP |
+| 建会话+协商 | **INVITE + SDP** | **SETUP**（Transport 头，给 Session id） |
+| 开始传输 | **ACK**（INVITE 的确认，会话正式建立） | **PLAY**（Range，真正开始拉流） |
+| 暂停 | （SIP 无，媒体层自己处理） | PAUSE |
+| 定位/seek | （SIP 无，靠 re-INVITE 或 RTSP Range） | PLAY + Range |
+| 结束 | **BYE** | **TEARDOWN** |
+
+看报文对照就清楚：
+
+**SIP INVITE（一步搞定协商+启动）**：
+```
+INVITE sip:34020000001320000001@3402000000 SIP/2.0   ← 方法+目标
+Content-Type: application/sdp                          ← 带媒体描述（SDP）
+v=0
+m=video 10000 RTP/AVP 96                                ← 端口/PT/编码
+a=sendonly                                              ← 方向
+a=rtpmap:96 H264/90000
+```
+INVITE 一步里既协商参数（带 SDP）又表达"我要开始媒体会话"。
+
+**RTSP 要两步（SETUP + PLAY）**：
+```
+SETUP rtsp://.../trackID=0 RTSP/1.0                    ← 第一步：建立传输
+Transport: RTP/AVP;unicast;client_port=10000-10001
+↓ 200 OK  Session: 12345678                            ← 给个 session id
+
+PLAY rtsp://... RTSP/1.0                                ← 第二步：开始播
+Session: 12345678
+Range: npt=0.000-
+↓ 200 OK
+```
+SETUP 只协商传输参数（给 session id），PLAY 才真正开始拉流。
+
+**为什么 SIP 一步、RTSP 两步**：设计目标不同。
+- SIP 是会话控制协议（通用，原为电话）：INVITE 语义是"邀请你加入会话"，一步到位——参数在 SDP 里，接受就 ACK 开始。电话不能"先 SETUP 再 PLAY"。
+- RTSP 是流媒体遥控器：SETUP 是"准备传输通道"，PLAY 是"开始播"。分开是因为流媒体有"准备就绪但不播"的需求（暂停、seek）。SETUP 后可 PAUSE、再 PLAY、再 TEARDOWN——需要独立的播放控制状态机。
+
+所以 RTSP 把"建通道"和"开始传"拆开（要做播放控制 PLAY/PAUSE/SEEK），SIP 不需要播放控制（那是媒体层的事），INVITE 一步建会话就够。这也是为什么 GB28181 的"回放"也走 INVITE（SDP 的 s=Playback），不是 PLAY+Range——SIP 把点播和回放统一成 INVITE+SDP，差别只在 SDP 的 s= 行。
+
+**SDP 的角色**：两者都用 SDP 协商媒体参数，但位置不同——SIP 的 SDP 在 INVITE body 里（带方向 sendonly/recvonly），RTSP 把媒体描述（DESCRIBE 拿 SDP）和建立传输（SETUP 的 Transport 头）也拆开了，SIP 全塞进 INVITE。
+
 ## 8. 当前仓库里的最小 GB28181 模块
 
 位置：
