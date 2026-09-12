@@ -1313,6 +1313,10 @@ int main(void)
     int rtcp_sockfd;
     int tcp_listen_sock = -1;   /* TCP listen，接受设备 TCP 承载连接 */
     int tcp_client_sock = -1;  /* accept 得到的连接 fd */
+    /* TCP 流重组残留缓冲：TCP 是字节流，recv 可能返回半个或多个 RTP 包。
+     * 每次 recv 追加到 stream_buf，按 RTP 头 length 切分完整包，多余留下次。 */
+    unsigned char stream_buf[8192];
+    int stream_len = 0;
     char recv_buf[8192];
     unsigned char rtp_buf[2048];
     unsigned char rtcp_buf[2048];
@@ -1454,16 +1458,39 @@ int main(void)
             continue;
         }
 
-        /* TCP client：从已连接 fd 收 RTP，交同样的解析。 */
+        /* TCP client：从已连接 fd 收 RTP（RFC 4571 framing：2字节length+RTP）。
+         * TCP 是字节流，recv 可能返回半个或多个 RTP 包，用残留缓冲重组。 */
         if (tcp_client_sock >= 0 && FD_ISSET(tcp_client_sock, &readfds)) {
-            ret = recv(tcp_client_sock, (char *)rtp_buf, sizeof(rtp_buf), 0);
+            ret = recv(tcp_client_sock, (char *)stream_buf + stream_len,
+                       (int)sizeof(stream_buf) - stream_len, 0);
             if (ret > 0) {
-                print_rtp_packet_summary(rtp_buf, ret);
-                g_rtcp_stats.rtp_rx_count++;
+                int processed;
+                stream_len += ret;
+                /* 按 RFC 4571 切分：2字节 length(大端) + length 字节 RTP。 */
+                processed = 0;
+                while (stream_len - processed >= 2) {
+                    unsigned int rtp_len = ((unsigned int)stream_buf[processed] << 8) |
+                                           stream_buf[processed + 1];
+                    /* RTCP 包也可能在这条流上（jrtplib 复用），靠 PT 区分。
+                     * rtp_len 是后面 RTP/RTCP 包的字节数。 */
+                    if (rtp_len == 0 || rtp_len > (unsigned int)(stream_len - processed - 2)) {
+                        break;  /* 不够一个完整包，留下次 */
+                    }
+                    /* 交解析（和 UDP 收 RTP 走同样路径）。 */
+                    print_rtp_packet_summary(stream_buf + processed + 2, (int)rtp_len);
+                    g_rtcp_stats.rtp_rx_count++;
+                    processed += 2 + rtp_len;
+                }
+                /* 把没处理完的残留移到缓冲头。 */
+                if (processed > 0 && processed < stream_len) {
+                    memmove(stream_buf, stream_buf + processed, (size_t)(stream_len - processed));
+                }
+                stream_len -= processed;
             } else {
                 printf("===== TCP RTP client disconnected =====\n");
                 socket_close(tcp_client_sock);
                 tcp_client_sock = -1;
+                stream_len = 0;  /* 清残留缓冲 */
             }
             continue;
         }

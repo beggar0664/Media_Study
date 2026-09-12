@@ -374,9 +374,9 @@ RTP 分片如何控制 marker/timestamp
 
 后续走向"能当生产设备用"还差（按优先级）：
 
-1. TCP 流重组 + 设备作 server：TCP 承载已闭环（mock 作 server 收 RTP），但 recv 粘包未按 RTP 头重组；设备作 server 的 passive 模式留后续。
-2. Download 媒体落盘：Playback 按段拉流已通（mock 解析 RecordInfo Response 选段发 Playback INVITE），Download 的媒体保存留后续。
-3. 对接真实 GB28181 平台：mock 已升级到贴近真平台（支持注销、平台主动 Query/INVITE、动态 nonce、TCP 承载闭环、H.265 SDP 协商、Playback/Download、RTCP 统计上报、录像段管理），下一步对接 wvp-pro 或厂商平台验证。
+1. 设备作 TCP server 的 passive 模式：TCP 承载已闭环（mock 作 server 收 RTP + RFC 4571 流重组），设备作 server 的 listen/accept 留后续。
+2. Download 媒体落盘：Playback 按段拉流已通，Download 的媒体保存留后续。
+3. 对接真实 GB28181 平台：mock 已升级到贴近真平台（支持注销、平台主动 Query/INVITE、动态 nonce、TCP 承载闭环+流重组、H.265 SDP 协商、Playback/Download、RTCP 统计上报、录像段管理），下一步对接 wvp-pro 或厂商平台验证。
 
 生产设备状态机设计的具体路线见 [MediaProtrocl/gb28181_study.md](MediaProtrocl/gb28181_study.md) 第 14 节。
 
