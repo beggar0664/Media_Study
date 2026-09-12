@@ -74,6 +74,7 @@ static void gb28181_init_default_config(gb28181_config_t *cfg)
     snprintf(cfg->codec, sizeof(cfg->codec), "%s", "H264");
     snprintf(cfg->session_name, sizeof(cfg->session_name), "%s", "Play");
     cfg->use_tcp = 0;
+    cfg->tcp_passive = 0;
     cfg->enable_dump = 0;
     cfg->ssrc = 0x12345678;
 }
@@ -208,7 +209,54 @@ int gb28181_start(gb28181_handle_t handle)
 
     if (ctx->config.use_tcp) {
         /* ---- TCP 承载分支 ----
-         * 设备作 client，主动 connect 到平台的 RTP TCP 端口。
+         * 两种模式：
+         *   active（默认）：设备作 client，主动 connect 到平台。建好连接后给 jrtplib。
+         *   passive（tcp_passive=1）：设备作 server，bind+listen 本地 RTP 端口，
+         *     SDP 声明 setup:passive，等平台 connect。平台 ACK 后设备 accept，
+         *     把 accept 到的 fd 给 jrtplib。
+         * passive 模式的 accept 需要在收到平台 ACK 后做（事件循环里），
+         * 当前 gb28181_start 只做 listen，accept 留后续事件循环接入。 */
+        if (ctx->config.tcp_passive) {
+            /* passive 模式：listen，等平台 connect。 */
+            int listen_sock = (int)socket(AF_INET, SOCK_STREAM, 0);
+            if (listen_sock < 0) {
+                printf("[gb28181] passive TCP socket creation failed\n");
+                delete session;
+                return -5;
+            }
+            int opt = 1;
+            setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+            struct sockaddr_in local;
+            memset(&local, 0, sizeof(local));
+            local.sin_family = AF_INET;
+            local.sin_port = htons((u_short)cfg_local_rtp_port(&ctx->config));
+#ifdef _WIN32
+            local.sin_addr.s_addr = inet_addr(cfg_local_ip(&ctx->config));
+#else
+            inet_pton(AF_INET, cfg_local_ip(&ctx->config), &local.sin_addr);
+#endif
+            if (bind(listen_sock, (struct sockaddr *)&local, sizeof(local)) < 0 ||
+                listen(listen_sock, 1) < 0) {
+                printf("[gb28181] passive TCP listen on %s:%d failed\n",
+                       cfg_local_ip(&ctx->config), cfg_local_rtp_port(&ctx->config));
+#ifdef _WIN32
+                closesocket(listen_sock);
+#else
+                close(listen_sock);
+#endif
+                delete session;
+                return -7;
+            }
+            printf("[gb28181] TCP passive listening on %s:%d (waiting for platform connect)\n",
+                   cfg_local_ip(&ctx->config), cfg_local_rtp_port(&ctx->config));
+            /* TODO: accept 在收到平台 ACK 后做（事件循环里），把 fd 给 jrtplib。
+             * 当前只 listen，不阻塞 accept。媒体发送在 accept 完成后才能进行。 */
+            ctx->rtp_session = session;
+            ctx->started = 1;
+            return 0;
+        }
+
+        /* active 模式：设备作 client，主动 connect 到平台的 RTP TCP 端口。
          * 建好连接后把 socket fd 交给 jrtplib 的 RTPTCPTransmitter。 */
         RTPTCPTransmissionParams trans_params;
         status = session->Create(session_params, &trans_params, RTPTransmitter::TCPProto);
@@ -386,8 +434,11 @@ int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, c
     }
 
     if (config->use_tcp) {
-        /* TCP 承载：m= 用 TCP/RTP/AVP，setup:active 表示设备主动连平台，
-         * connection:new 表示新建 TCP 连接（GB28181 TCP 被动收流常见写法）。 */
+        /* TCP 承载：m= 用 TCP/RTP/AVP。
+         * setup:active=设备作 client 主动连平台（默认）；
+         * setup:passive=设备作 server，平台主动连设备（GB28181 被动收流常见）。
+         * connection:new 表示新建 TCP 连接。 */
+        const char *setup = config->tcp_passive ? "passive" : "active";
         return snprintf(buf, buf_size,
             "v=0\r\n"
             "o=%s 0 0 IN IP4 %s\r\n"
@@ -396,7 +447,7 @@ int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, c
             "t=0 0\r\n"
             "m=video %d TCP/RTP/AVP %d\r\n"
             "a=sendonly\r\n"
-            "a=setup:active\r\n"
+            "a=setup:%s\r\n"
             "a=connection:new\r\n"
             "a=rtpmap:%d %s/90000\r\n"
             "%s"
@@ -407,6 +458,7 @@ int gb28181_build_sdp(const gb28181_config_t *config, char *buf, int buf_size, c
             cfg_local_ip(config),
             cfg_local_rtp_port(config),
             config->payload_type,
+            setup,
             config->payload_type,
             codec,
             dl,

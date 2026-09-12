@@ -34,6 +34,7 @@ typedef struct {
     char codec[16];          /* 编码类型：H264 / H265，SDP a=rtpmap 用。默认 H264。 */
     char session_name[16];   /* 会话类型：Play / Playback / Download，SDP s= 用。默认 Play。 */
     int use_tcp;
+    int tcp_passive;        /* TCP 被动模式：1=设备作 server(listen/accept)，0=设备作 client(connect)。默认 0。 */
     int enable_dump;
     unsigned int ssrc;
 } gb28181_config_t;
