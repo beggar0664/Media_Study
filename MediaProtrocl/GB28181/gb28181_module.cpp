@@ -1066,6 +1066,132 @@ int gb28181_build_message_record_info_response(const gb28181_config_t *config,
         body_len, body);
 }
 
+/*
+ * Alarm 报警上报（GB/T 28181 MANSCDP）。
+ *
+ * 同 Keepalive 一样是 <Notify> 单向通知（设备→平台），差别只在 <CmdType>=Alarm。
+ * 这是 GB28181 命令同模式扩展的典型例子：换 CmdType + 换字段 = 新命令。
+ * alarm_method=1 电话 2 设备 3 短信 4 GPS 5 视频 6 设备故障。
+ */
+int gb28181_build_message_alarm(const gb28181_config_t *config,
+                                 int cseq,
+                                 const char *device_id,
+                                 int alarm_method,
+                                 int alarm_type,
+                                 const char *alarm_time,
+                                 const char *alarm_desc,
+                                 char *buf,
+                                 int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !device_id || !buf || buf_size <= 0) {
+        return -1;
+    }
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Notify>\r\n"
+        "<CmdType>Alarm</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<AlarmMethod>%d</AlarmMethod>\r\n"
+        "<AlarmType>%d</AlarmType>\r\n"
+        "<AlarmTime>%s</AlarmTime>\r\n"
+        "<AlarmDescription>%s</AlarmDescription>\r\n"
+        "</Notify>\r\n",
+        cseq, device_id, alarm_method, alarm_type,
+        alarm_time ? alarm_time : "2026-08-01T00:00:00",
+        alarm_desc ? alarm_desc : "mock alarm");
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len, body);
+}
+
+/*
+ * MobilePosition 移动设备定位上报（GB/T 28181 MANSCDP）。
+ *
+ * 同 Keepalive/Alarm 一样是 <Notify> 单向通知，<CmdType>=MobilePosition。
+ * 周期报 GPS 经纬度/速度/方向/海拔。同模式扩展，换字段即可。
+ */
+int gb28181_build_message_mobile_position(const gb28181_config_t *config,
+                                           int cseq,
+                                           const char *device_id,
+                                           const char *longitude,
+                                           const char *latitude,
+                                           int speed,
+                                           int direction,
+                                           int altitude,
+                                           char *buf,
+                                           int buf_size)
+{
+    char body[1024];
+    int body_len;
+
+    if (!config || !device_id || !buf || buf_size <= 0) {
+        return -1;
+    }
+    body_len = snprintf(body, sizeof(body),
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+        "<Notify>\r\n"
+        "<CmdType>MobilePosition</CmdType>\r\n"
+        "<SN>%d</SN>\r\n"
+        "<DeviceID>%s</DeviceID>\r\n"
+        "<Longitude>%s</Longitude>\r\n"
+        "<Latitude>%s</Latitude>\r\n"
+        "<Speed>%d</Speed>\r\n"
+        "<Direction>%d</Direction>\r\n"
+        "<Altitude>%d</Altitude>\r\n"
+        "</Notify>\r\n",
+        cseq, device_id,
+        longitude ? longitude : "0",
+        latitude ? latitude : "0",
+        speed, direction, altitude);
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        return -2;
+    }
+    return snprintf(buf, buf_size,
+        "MESSAGE sip:%s@%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK-gb28181-message-%d\r\n"
+        "From: <sip:%s@%s>;tag=gb28181\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s-message-%d\r\n"
+        "CSeq: %d MESSAGE\r\n"
+        "Contact: <sip:%s@%s:%d>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: Application/MANSCDP+xml\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        config->sip_server_ip, config->domain,
+        cfg_local_ip(config), cfg_local_sip_port(config), cseq,
+        config->username, config->domain,
+        config->sip_server_ip, config->domain,
+        config->stream_id, cseq,
+        cseq,
+        config->username, cfg_local_ip(config), cfg_local_sip_port(config),
+        body_len, body);
+}
+
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size)
 {
     /* 只做最小标签提取，便于 mock server 学习命令解析。 */

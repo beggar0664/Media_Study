@@ -160,6 +160,31 @@ int gb28181_build_message_record_info_response(const gb28181_config_t *config,
                                                 const char *device_id,
                                                 char *buf,
                                                 int buf_size);
+/* Alarm 报警上报：设备→平台 <Notify>，单向通知（同 Keepalive 模式）。
+ * alarm_method=1 电话报警 2 设备报警 3 短信 4 GPS 5 视频 6 设备故障。
+ * alarm_type 详见 GB28181 标准（如 0 视频 1 音频丢失 等）。
+ * 这是同模式扩展：和 Keepalive 一样用 MESSAGE+<Notify>，差别在 <CmdType>。 */
+int gb28181_build_message_alarm(const gb28181_config_t *config,
+                                 int cseq,
+                                 const char *device_id,
+                                 int alarm_method,
+                                 int alarm_type,
+                                 const char *alarm_time,
+                                 const char *alarm_desc,
+                                 char *buf,
+                                 int buf_size);
+/* MobilePosition 移动设备定位上报：设备→平台 <Notify>，周期报 GPS 位置。
+ * 同 Keepalive 模式，<Notify> 单向通知，差别在 <CmdType>=MobilePosition。 */
+int gb28181_build_message_mobile_position(const gb28181_config_t *config,
+                                           int cseq,
+                                           const char *device_id,
+                                           const char *longitude,   /* 经度，如 114.123456 */
+                                           const char *latitude,    /* 纬度，如 30.654321 */
+                                           int speed,                /* 速度，km/h */
+                                           int direction,            /* 方向，0-359 */
+                                           int altitude,             /* 海拔，米 */
+                                           char *buf,
+                                           int buf_size);
 /* 学习用 XML 片段提取。 */
 int gb28181_extract_xml_tag(const char *xml, const char *tag, char *buf, int buf_size);
 /* SDP / PS / RTP 相关构造与发送。详见 ../gb28181_study.md 的 SDP、RTP、PS over RTP 章节。 */
