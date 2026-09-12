@@ -1146,6 +1146,42 @@ static void send_platform_invite(int sockfd, const struct sockaddr_in *device_ad
 }
 
 /*
+ * 平台根据 RecordInfo Response 里选定的录像段，发 INVITE 拉该段回放流。
+ * SDP 的 s=Playback + a=downloadspeed（Download 时），实际时间段在 INVITE 之外
+ * （GB28181 回放的时间段由 RecordInfo Query 指定，Playback INVITE 只声明会话类型）。
+ * start_time/end_time 是从 RecordInfo Response Item 里解析出来的，用于日志展示。
+ */
+static void send_platform_playback_invite(int sockfd, const struct sockaddr_in *device_addr,
+                                          int cseq, const char *codec,
+                                          const char *start_time, const char *end_time)
+{
+    char sdp[512];
+    int sdp_len;
+    char buf[2048];
+
+    /* s=Playback 表示回放会话；codec 由调用方指定（H264/H265）。 */
+    build_play_sdp(sdp, sizeof(sdp), codec ? codec : "H264", "Playback");
+    sdp_len = (int)strlen(sdp);
+
+    snprintf(buf, sizeof(buf),
+        "INVITE sip:34020000001320000001@3402000000 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-platform-pb-%d\r\n"
+        "From: <sip:34020000002000000001@3402000000>;tag=platform\r\n"
+        "To: <sip:34020000001320000001@3402000000>\r\n"
+        "Call-ID: platform-pb-%d\r\n"
+        "CSeq: %d INVITE\r\n"
+        "Contact: <sip:34020000002000000001@127.0.0.1:5060>\r\n"
+        "Max-Forwards: 70\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s",
+        cseq, cseq, cseq, sdp_len, sdp);
+    printf("===== TX platform Playback INVITE (codec=%s segment=%s~%s) =====\n%s\n",
+           codec ? codec : "H264", start_time ? start_time : "?", end_time ? end_time : "?", buf);
+    send_reply(sockfd, device_addr, buf);
+}
+
+/*
  * 平台主动下发 DeviceControl PTZ 控制命令（平台→设备）。
  * 用固定 PTZCmd 示例（向上转）：A5 0F 00 08 08 00 00 23（标准布局，最后字节为校验和）。
  * 真实 PTZ 语义解析留后续，这里验证"平台发控制、设备收到"链路。
@@ -1577,12 +1613,38 @@ int main(void)
 
             /* 判断设备发来的是 Query 还是 Response（看 XML 根元素）。 */
             if (msg.body && strstr(msg.body, "<Response>") != NULL) {
-                /* 设备回的是 Response（对平台下发 Query 的应答）。
-                 * 收到 Catalog Response 后，平台依次下发：
-                 * DeviceControl PTZ 控制、RecordInfo 录像查询、再 INVITE 拉流。 */
-                send_platform_device_control_ptz(sockfd, &peer, msg.cseq + 150);
-                send_platform_record_info_query(sockfd, &peer, msg.cseq + 170);
-                if (!platform_invited) {
+                /* 设备回的是 Response。按 CmdType 区分处理：
+                 * - Catalog Response → 下发 PTZ + RecordInfo Query（查录像）
+                 * - RecordInfo Response → 解析 Item 选段 → 发 Playback INVITE（拉该段回放）
+                 */
+                if (strcmp(cmd_type, "Catalog") == 0) {
+                    send_platform_device_control_ptz(sockfd, &peer, msg.cseq + 150);
+                    send_platform_record_info_query(sockfd, &peer, msg.cseq + 170);
+                } else if (strcmp(cmd_type, "RecordInfo") == 0) {
+                    /* 解析 RecordInfo Response 里的第一段录像 Item，
+                     * 提取 StartTime/EndTime，发 Playback INVITE 拉该段。 */
+                    char item_xml[2048];
+                    char st[32] = {0};
+                    char et[32] = {0};
+                    const char *item = strstr(msg.body, "<Item>");
+                    if (item) {
+                        const char *item_end = strstr(item, "</Item>");
+                        int len = item_end ? (int)(item_end - item + 7) : (int)strlen(item);
+                        if (len > (int)sizeof(item_xml) - 1) len = (int)sizeof(item_xml) - 1;
+                        memcpy(item_xml, item, (size_t)len);
+                        item_xml[len] = '\0';
+                        gb28181_extract_xml_tag(item_xml, "StartTime", st, sizeof(st));
+                        gb28181_extract_xml_tag(item_xml, "EndTime", et, sizeof(et));
+                    }
+                    printf("[platform] RecordInfo Response, selected segment: %s ~ %s\n",
+                           st[0] ? st : "?", et[0] ? et : "?");
+                    if (!platform_invited) {
+                        send_platform_playback_invite(sockfd, &peer, msg.cseq + 200,
+                                                        "H264", st, et);
+                        platform_invited = 1;
+                    }
+                } else if (!platform_invited) {
+                    /* 其它 Response（如 DeviceInfo/DeviceStatus），走实时 INVITE。 */
                     send_platform_invite(sockfd, &peer, msg.cseq + 200);
                     platform_invited = 1;
                 }
