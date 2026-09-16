@@ -1363,7 +1363,91 @@ static void handle_state_timeout(gb_device_ctx_t *ctx)
  * 命令行参数：
  *   argv[1] = max_cycles，0=常驻到 Ctrl+C，>0=N 次 INVITE/BYE 循环后注销。
  *   argv[2] = media_file，可选 .h264(Annex-B) 文件路径；不填走内置合成流。
+ *   argv[3] = tcp，启用 TCP 承载。
+ *   argv[4] = codec，H264 / H265。
+ *   argv[5] = session，Play / Playback / Download。
+ * 配置持久化：启动时读 gb28181_device.conf（key=value 格式），
+ * 有则用文件配置，无则用默认值并写一份配置文件，方便用户修改后重启恢复。
  */
+
+#define GB_CONFIG_FILE "gb28181_device.conf"
+
+/*
+ * 从配置文件读 key=value 行，填入 ctx 的配置字段。
+ * 文件不存在或字段缺失时保持默认值（不报错）。
+ */
+static int load_config_file(gb_device_ctx_t *ctx, const char *path)
+{
+    FILE *fp;
+    char line[256];
+    char key[64];
+    char val[192];
+
+    if (!ctx || !path) return -1;
+    fp = fopen(path, "r");
+    if (!fp) return -1;  /* 文件不存在，用默认值 */
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *eq = strchr(line, '=');
+        char *nl;
+        if (!eq) continue;
+        *eq = '\0';
+        snprintf(key, sizeof(key), "%s", line);
+        snprintf(val, sizeof(val), "%s", eq + 1);
+        /* 去掉行尾换行 */
+        nl = strchr(val, '\n'); if (nl) *nl = '\0';
+        nl = strchr(val, '\r'); if (nl) *nl = '\0';
+
+        if (strcmp(key, "local_id") == 0) snprintf(ctx->cfg.local_id, sizeof(ctx->cfg.local_id), "%s", val);
+        else if (strcmp(key, "domain") == 0) snprintf(ctx->cfg.domain, sizeof(ctx->cfg.domain), "%s", val);
+        else if (strcmp(key, "username") == 0) snprintf(ctx->cfg.username, sizeof(ctx->cfg.username), "%s", val);
+        else if (strcmp(key, "password") == 0) snprintf(ctx->cfg.password, sizeof(ctx->cfg.password), "%s", val);
+        else if (strcmp(key, "sip_server_ip") == 0) snprintf(ctx->cfg.sip_server_ip, sizeof(ctx->cfg.sip_server_ip), "%s", val);
+        else if (strcmp(key, "sip_server_port") == 0) ctx->cfg.sip_server_port = atoi(val);
+        else if (strcmp(key, "local_ip") == 0) snprintf(ctx->cfg.local_ip, sizeof(ctx->cfg.local_ip), "%s", val);
+        else if (strcmp(key, "local_sip_port") == 0) ctx->cfg.local_sip_port = atoi(val);
+        else if (strcmp(key, "local_rtp_port") == 0) ctx->cfg.local_rtp_port = atoi(val);
+        else if (strcmp(key, "stream_id") == 0) snprintf(ctx->cfg.stream_id, sizeof(ctx->cfg.stream_id), "%s", val);
+        else if (strcmp(key, "invite_target") == 0) snprintf(ctx->invite_target, sizeof(ctx->invite_target), "%s", val);
+        else if (strcmp(key, "ssrc") == 0) { ctx->cfg.ssrc = (unsigned int)strtoul(val, NULL, 0); ctx->ssrc = ctx->cfg.ssrc; }
+        else if (strcmp(key, "codec") == 0) snprintf(ctx->cfg.codec, sizeof(ctx->cfg.codec), "%s", val);
+        else if (strcmp(key, "session_name") == 0) snprintf(ctx->cfg.session_name, sizeof(ctx->cfg.session_name), "%s", val);
+        else if (strcmp(key, "use_tcp") == 0) ctx->cfg.use_tcp = atoi(val);
+    }
+    fclose(fp);
+    return 0;
+}
+
+/*
+ * 写一份默认配置文件（首次启动或用户删除后重建）。
+ * key=value 格式，用户可手改后重启生效。
+ */
+static void save_default_config_file(const gb_device_ctx_t *ctx, const char *path)
+{
+    FILE *fp;
+    if (!ctx || !path) return;
+    fp = fopen(path, "w");
+    if (!fp) return;
+    fprintf(fp, "# GB28181 device config (key=value)\n");
+    fprintf(fp, "# 改完重启生效。# 开头是注释。\n");
+    fprintf(fp, "local_id=%s\n", ctx->cfg.local_id);
+    fprintf(fp, "domain=%s\n", ctx->cfg.domain);
+    fprintf(fp, "username=%s\n", ctx->cfg.username);
+    fprintf(fp, "password=%s\n", ctx->cfg.password);
+    fprintf(fp, "sip_server_ip=%s\n", ctx->cfg.sip_server_ip);
+    fprintf(fp, "sip_server_port=%d\n", ctx->cfg.sip_server_port);
+    fprintf(fp, "local_ip=%s\n", ctx->cfg.local_ip);
+    fprintf(fp, "local_sip_port=%d\n", ctx->cfg.local_sip_port);
+    fprintf(fp, "local_rtp_port=%d\n", ctx->cfg.local_rtp_port);
+    fprintf(fp, "stream_id=%s\n", ctx->cfg.stream_id);
+    fprintf(fp, "invite_target=%s\n", ctx->invite_target);
+    fprintf(fp, "ssrc=0x%08X\n", ctx->cfg.ssrc);
+    fprintf(fp, "codec=%s\n", ctx->cfg.codec[0] ? ctx->cfg.codec : "H264");
+    fprintf(fp, "session_name=%s\n", ctx->cfg.session_name[0] ? ctx->cfg.session_name : "Play");
+    fprintf(fp, "use_tcp=%d\n", ctx->cfg.use_tcp);
+    fclose(fp);
+}
+
 int main(int argc, char **argv)
 {
     gb_device_ctx_t ctx;
@@ -1417,12 +1501,23 @@ int main(int argc, char **argv)
     ctx.cfg.payload_type = 96;
     ctx.cfg.ssrc = 0x12345678;
     ctx.ssrc = 0x12345678;
+    snprintf(ctx.cfg.codec, sizeof(ctx.cfg.codec), "%s", "H264");
+    snprintf(ctx.cfg.session_name, sizeof(ctx.cfg.session_name), "%s", "Play");
     ctx.cfg.use_tcp = use_tcp;
-    if (codec) {
-        snprintf(ctx.cfg.codec, sizeof(ctx.cfg.codec), "%s", codec);
-    }
-    if (session) {
-        snprintf(ctx.cfg.session_name, sizeof(ctx.cfg.session_name), "%s", session);
+
+    /* 配置持久化：先尝试读配置文件，没有则写一份默认。 */
+    if (load_config_file(&ctx, GB_CONFIG_FILE) == 0) {
+        printf("[config] loaded from %s\n", GB_CONFIG_FILE);
+        /* 命令行参数覆盖配置文件（命令行优先）。 */
+        if (use_tcp) ctx.cfg.use_tcp = 1;
+        if (codec) snprintf(ctx.cfg.codec, sizeof(ctx.cfg.codec), "%s", codec);
+        if (session) snprintf(ctx.cfg.session_name, sizeof(ctx.cfg.session_name), "%s", session);
+    } else {
+        printf("[config] %s not found, using defaults + saving\n", GB_CONFIG_FILE);
+        if (use_tcp) ctx.cfg.use_tcp = 1;
+        if (codec) snprintf(ctx.cfg.codec, sizeof(ctx.cfg.codec), "%s", codec);
+        if (session) snprintf(ctx.cfg.session_name, sizeof(ctx.cfg.session_name), "%s", session);
+        save_default_config_file(&ctx, GB_CONFIG_FILE);
     }
     if (media_file) {
         snprintf(ctx.media_file, sizeof(ctx.media_file), "%s", media_file);

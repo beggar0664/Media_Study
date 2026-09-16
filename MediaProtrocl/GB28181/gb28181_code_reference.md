@@ -405,10 +405,13 @@ RTP:   udp.dstport==30000，未自动识别时 -d udp.port==30000,rtp
 - **RTCP 统计持续上报**：mock 加 `rtcp_stats_t` 结构，周期累计 RTP 接收包数（`rtp_rx_count`）；收到 SR 时记 sender info（packets/octet，可对比算丢包）和 NTP 中位（LSR，算 RTT 用）；收到 RR 时累计丢包/抖动。主循环 select 改 1s 超时，每秒打印 `[RTCP stats]` 汇总。已验证：mock 周期打印 `rtp_rx=N`（有 SR 时附 sr_packets/lost/sr_octets，有 RR 时附丢包/抖动）。注：当前 mock 不发 RR 给 stateful，故 stateful 的 RR 无 block；统计以 mock 自身 RTP 接收为主。
 - **录像段索引管理（Playback 按段拉流）**：mock 收到 RecordInfo Response 后解析 `<Item>` 的 `StartTime/EndTime` 选定第一段，发 `send_platform_playback_invite`（s=Playback + 时间段）拉该段回放流。已验证：mock 解析出 `2026-08-01T08:00:00~08:30:00` 段并发 Playback INVITE，设备回 200+SDP。链路：Catalog Response → PTZ+RecordInfo Query → RecordInfo Response → 解析段 → Playback INVITE → 200+SDP → ACK → 推流。注：Download 媒体落盘保存仍留后续（当前回放复用 .h264 文件）。
 
+- **配置持久化/重启恢复**：stateful 启动时读 `gb28181_device.conf`（key=value 格式），有则用文件配置，无则用默认值并写一份配置文件（`save_default_config_file`）。命令行参数覆盖配置文件（命令行优先）。已验证：首次启动生成配置文件（含 local_id/domain/username/password/sip_server_ip/端口/ssrc/codec/session/use_tcp/invite_target 等全部字段），用户可手改后重启恢复。配置文件加入 .gitignore（运行时产物）。
+
 ### 7.2 待补（走向生产设备，见 `gb28181_study.md` 第 14 节）
 
 - TCP passive 模式 accept：SDP setup:passive + listen 已支持，accept 在事件循环接入留后续（当前 TODO）
 - Download 媒体落盘：Playback 按段拉流已通，Download 的媒体保存留后续
+- 多路并发：当前状态机支持单 dialog 单通道点播，多通道同时点播需改 stateful 结构为多 dialog 数组
 - 真实平台互操作：mock 已贴近真平台，下一步对接 wvp-pro 或厂商平台验证兼容性
 
 ## 8. 阅读顺序建议

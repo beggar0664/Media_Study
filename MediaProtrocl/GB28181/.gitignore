@@ -5,3 +5,4 @@ build/
 build_nmake/
 nmakebuild/
 vsbuild/
+gb28181_device.conf
